@@ -28,6 +28,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/lib/utils'
 import { Checkbox } from '@/components/ui/checkbox'
 import { generateInvoiceId, type QRInvoiceData } from '@/lib/bills/qr-invoice'
+import { useWalletStore } from '@/lib/wallet/walletStore'
 
 interface PaymentFormProps {
   schema: BillerSchema
@@ -45,6 +46,7 @@ export function PaymentForm({ schema, countryCode }: PaymentFormProps) {
   const [isProcessing, setIsProcessing] = useState(false)
   const [showSchedule, setShowSchedule] = useState(false)
   const [invoice, setInvoice] = useState<QRInvoiceData | null>(null)
+  const publicKey = useWalletStore((s) => s.publicKey)
 
   const formSchemaObject: Record<string, z.ZodTypeAny> = {}
   schema.fields.forEach((field) => {
@@ -130,12 +132,22 @@ export function PaymentForm({ schema, countryCode }: PaymentFormProps) {
             accountReference: schema.id.slice(0, 12),
             transactionDesc: `Pay ${schema.name}`.slice(0, 13),
             externalId: crypto.randomUUID(),
+            kind: 'billpay',
+            // Lets AML screening key this payment to the customer's account
+            // rather than to their handset alone.  Omitted when no wallet is
+            // connected; the route falls back to a hashed MSISDN.
+            userId: publicKey ?? undefined,
           }),
         })
 
         if (!initiateRes.ok) {
-          const err = await initiateRes.json().catch(() => ({}))
-          throw new Error((err as { error?: string }).error ?? 'Payment initiation failed')
+          const err = (await initiateRes.json().catch(() => ({}))) as {
+            error?: string
+            message?: string
+          }
+          // Prefer `message`: compliance holds return a customer-safe string
+          // there, while `error` is a machine code (COMPLIANCE_BLOCKED).
+          throw new Error(err.message ?? err.error ?? 'Payment initiation failed')
         }
 
         const { transactionId, provider } = (await initiateRes.json()) as {
