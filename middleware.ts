@@ -12,6 +12,16 @@ const ratelimit = new Ratelimit({
 })
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
+  if (pathname.startsWith('/admin')) {
+    const role = request.cookies.get('aframp_role')?.value
+    if (role !== 'admin') {
+      return NextResponse.redirect(new URL('/dashboard', request.url))
+    }
+    return NextResponse.next()
+  }
+
   const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '127.0.0.1'
 
   const { success, limit, remaining, reset } = await ratelimit.limit(ip)
@@ -39,5 +49,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: '/api/:path*',
+  matcher: ['/api/:path*', '/admin/:path*'],
 }

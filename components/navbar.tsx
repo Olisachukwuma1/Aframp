@@ -8,6 +8,7 @@ import Link from 'next/link'
 import { Drawer } from 'vaul'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { ConnectButton } from '@/components/Wallet'
+import { NotificationDropdown } from '@/components/notifications/notification-dropdown'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -78,6 +79,7 @@ export function Navbar() {
 
           <div className="flex items-center gap-3">
             <ThemeToggle />
+            <NotificationDropdown />
             <ConnectButton />
 
             {/* Hamburger — mobile only */}

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Copy, Share2, Check, Gift } from 'lucide-react'
+import { Copy, Share2, Check, Gift, MousePointerClick, Users, Coins } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useReferral, REFERRAL_DISCOUNT_PCT } from '@/hooks/use-referral'
 import { toast } from 'sonner'
@@ -11,7 +11,7 @@ interface ReferralCardProps {
 }
 
 export function ReferralCard({ walletAddress }: ReferralCardProps) {
-  const { myCode, record, appliedCode, discountActive, applyCode, loading } =
+  const { myCode, record, stats, appliedCode, discountActive, applyCode, loading } =
     useReferral(walletAddress)
   const [codeInput, setCodeInput] = useState('')
   const [applying, setApplying] = useState(false)
@@ -19,7 +19,7 @@ export function ReferralCard({ walletAddress }: ReferralCardProps) {
 
   const shareUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/onramp?ref=${myCode}`
+      ? `${window.location.origin}/referral/${myCode}`
       : ''
 
   const handleCopy = async () => {
@@ -80,19 +80,33 @@ export function ReferralCard({ walletAddress }: ReferralCardProps) {
         </div>
       </div>
 
-      {/* Stats */}
-      {record && (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="rounded-xl bg-muted/40 p-3 text-center">
-            <p className="text-2xl font-bold text-foreground">{record.referees.length}</p>
-            <p className="text-xs text-muted-foreground mt-0.5">Friends referred</p>
-          </div>
-          <div className="rounded-xl bg-muted/40 p-3 text-center">
-            <p className="text-2xl font-bold text-primary">
-              {record.totalRebatesEarned > 0 ? `₦${record.totalRebatesEarned.toLocaleString()}` : '—'}
-            </p>
-            <p className="text-xs text-muted-foreground mt-0.5">Rebates earned</p>
-          </div>
+      {/* Analytics Stats */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-xl bg-muted/40 p-3 text-center">
+          <MousePointerClick className="w-4 h-4 mx-auto text-muted-foreground mb-1" />
+          <p className="text-lg font-bold text-foreground">{stats?.clickCount ?? 0}</p>
+          <p className="text-[10px] text-muted-foreground">Link clicks</p>
+        </div>
+        <div className="rounded-xl bg-muted/40 p-3 text-center">
+          <Users className="w-4 h-4 mx-auto text-muted-foreground mb-1" />
+          <p className="text-lg font-bold text-foreground">{stats?.conversionCount ?? 0}</p>
+          <p className="text-[10px] text-muted-foreground">Conversions</p>
+        </div>
+        <div className="rounded-xl bg-muted/40 p-3 text-center">
+          <Coins className="w-4 h-4 mx-auto text-muted-foreground mb-1" />
+          <p className="text-lg font-bold text-primary">
+            {stats && stats.totalRebatesEarned > 0
+              ? `₦${stats.totalRebatesEarned.toLocaleString()}`
+              : '—'}
+          </p>
+          <p className="text-[10px] text-muted-foreground">Rebates earned</p>
+        </div>
+      </div>
+
+      {/* Legacy stats (referees count from original record) */}
+      {record && record.referees.length > 0 && (
+        <div className="text-xs text-muted-foreground text-center">
+          {record.referees.length} friend{record.referees.length !== 1 ? 's' : ''} applied your code
         </div>
       )}
 

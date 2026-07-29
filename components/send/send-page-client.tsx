@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowLeft, QrCode, ChevronRight, Wallet, StickyNote } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,6 +15,7 @@ import {
   sendStellarP2P,
 } from '@/lib/stellar-p2p'
 import { getFreighterPublicKey, getFreighterNetwork } from '@/lib/wallet/freighter'
+import { parseTransferQrValue } from '@/lib/transfer-qr'
 
 type Step = 'recipient' | 'amount' | 'confirm' | 'success'
 
@@ -49,19 +50,23 @@ const NUMPAD_KEYS = [
 
 export function SendPageClient() {
   const router = useRouter()
-  const [step, setStep] = useState<Step>('recipient')
+  const searchParams = useSearchParams()
+  const initialTransfer = useMemo(() => parseTransferQrValue(searchParams.toString()), [searchParams])
+  const [step, setStep] = useState<Step>(initialTransfer?.recipient ? 'amount' : 'recipient')
   const [scannerOpen, setScannerOpen] = useState(false)
   const [isSending, setIsSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
   const [estimatedFee, setEstimatedFee] = useState<string | null>(null)
-  const [recipientInput, setRecipientInput] = useState('')
-  const [form, setForm] = useState<SendFormState>({
-    recipient: null,
-    amount: '',
-    asset: ASSETS[0],
+  const [recipientInput, setRecipientInput] = useState(() => initialTransfer?.recipient ?? '')
+  const [form, setForm] = useState<SendFormState>(() => ({
+    recipient: initialTransfer?.recipient ? { address: initialTransfer.recipient } : null,
+    amount: initialTransfer?.amount ?? '',
+    asset: initialTransfer?.asset
+      ? ASSETS.find((asset) => asset.symbol === initialTransfer.asset) ?? ASSETS[0]
+      : ASSETS[0],
     note: '',
-  })
+  }))
 
   const steps: Step[] = ['recipient', 'amount', 'confirm']
   const currentStepIdx = steps.indexOf(step)
@@ -84,9 +89,34 @@ export function SendPageClient() {
     }
   }
 
-  const handleRecipientSelect = (address: string, name?: string, avatar?: string) => {
+  const handleRecipientSelect = (
+    address: string,
+    name?: string,
+    avatar?: string,
+    amount?: string,
+    assetSymbol?: string
+  ) => {
     setRecipientInput(address)
-    setForm((prev) => ({ ...prev, recipient: { address, name, avatar } }))
+    setForm((prev) => ({
+      ...prev,
+      recipient: { address, name, avatar },
+      amount: amount ?? prev.amount,
+      asset: assetSymbol
+        ? ASSETS.find((asset) => asset.symbol === assetSymbol) ?? prev.asset
+        : prev.asset,
+    }))
+  }
+
+  const applyTransferPayload = (value: string) => {
+    const parsed = parseTransferQrValue(value)
+    if (parsed?.recipient) {
+      handleRecipientSelect(parsed.recipient, undefined, undefined, parsed.amount, parsed.asset)
+      setStep('amount')
+      return
+    }
+
+    handleRecipientSelect(value.trim())
+    setStep('amount')
   }
 
   const handleContinueRecipient = () => {
@@ -369,7 +399,7 @@ export function SendPageClient() {
       {scannerOpen && (
         <QRScanner
           onScan={(address) => {
-            handleRecipientSelect(address)
+            applyTransferPayload(address)
             setScannerOpen(false)
           }}
           onClose={() => setScannerOpen(false)}

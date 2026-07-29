@@ -1,7 +1,11 @@
 'use client'
 
+import Link from 'next/link'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { TrendingDown, TrendingUp } from 'lucide-react'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Button } from '@/components/ui/button'
+import { EmptyStateIllustration } from '@/components/ui/empty-state-illustration'
 import { useBalanceContext } from '@/contexts/balance-context'
 import { cn } from '@/lib/utils'
 
@@ -29,8 +33,20 @@ export function PortfolioPageClient() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary" />
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Skeleton className="h-28 rounded-[1.5rem]" />
+          <Skeleton className="h-28 rounded-[1.5rem]" />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <Skeleton className="h-80 rounded-[1.5rem]" />
+          <div className="space-y-3">
+            <Skeleton className="h-14 rounded-[1.5rem]" />
+            <Skeleton className="h-14 rounded-[1.5rem]" />
+            <Skeleton className="h-14 rounded-[1.5rem]" />
+          </div>
+        </div>
       </div>
     )
   }
@@ -67,8 +83,17 @@ export function PortfolioPageClient() {
       </div>
 
       {assets.length === 0 ? (
-        <div className="bg-card border border-border rounded-xl p-12 text-center text-muted-foreground">
-          No assets found in this wallet.
+        <div className="bg-card border border-border rounded-2xl p-12 flex flex-col items-center gap-4 text-center">
+          <EmptyStateIllustration variant="empty" />
+          <div>
+            <p className="font-semibold text-foreground">No assets in this wallet</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Add funds to your wallet to get started
+            </p>
+          </div>
+          <Button asChild variant="outline" size="sm" className="rounded-full">
+            <Link href="/onramp">Add Funds</Link>
+          </Button>
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

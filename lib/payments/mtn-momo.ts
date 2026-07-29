@@ -11,6 +11,7 @@
  *   MTN_MOMO_ENV        (sandbox | production)
  */
 
+import crypto from 'crypto'
 import {
   MobileMoneyError,
   MobileMoneyProvider,
@@ -232,3 +233,7 @@ export class MtnMomoProvider implements MobileMoneyProvider {
 }
 
 export const mtnMomoProvider = new MtnMomoProvider()
+
+export function _resetTokenCache() {
+  tokenCache = null
+}

@@ -11,11 +11,18 @@ import { useOfframpRate } from '@/hooks/use-offramp-rate'
 import { useOfframpForm } from '@/hooks/use-offramp-form'
 import { useOfframpBalances } from '@/hooks/use-offramp-balances'
 import { Skeleton } from '@/components/ui/skeleton'
-import { formatCurrency } from '@/lib/onramp/formatters'
+import { formatCurrency } from '@/lib/calculations'
 import { formatUsd, formatRateCountdown } from '@/lib/offramp/formatters'
 import type { OfframpOrder } from '@/types/offramp'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 
-const ORDER_KEY = 'offramp:latest-order'
 const LOCK_KEY = 'offramp:rate-lock'
 
 const assetUsdRates: Record<string, number> = {
@@ -84,31 +91,68 @@ export function OfframpPageClient() {
     return form.amountValue > 0 ? form.amountValue * usdRate : 0
   }, [form.amountValue, selectedAsset.asset])
 
-  const handleSubmit = () => {
-    if (!form.isValid) return
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false)
 
-    const lockExpires = Date.now() + 15 * 60 * 1000
-    setLockExpiresAt(lockExpires)
-    localStorage.setItem(LOCK_KEY, JSON.stringify({ expiresAt: lockExpires }))
+  // Show the confirmation summary first; the order is only created after
+  // the user explicitly confirms in the dialog.
+  const handleInitialSubmit = () => {
+    if (!form.isValid || isSubmitting) return
+    setShowConfirmDialog(true)
+  }
 
-    const order: OfframpOrder = {
-      id: `offramp-${Date.now()}`,
-      createdAt: Date.now(),
-      lockExpiresAt: lockExpires,
-      assetId: selectedAsset.id,
-      asset: selectedAsset.asset,
-      chain: selectedAsset.chain,
-      amount: parseFloat(form.state.amountInput.replace(/,/g, '')) || 0,
-      fiatCurrency: form.state.fiatCurrency,
-      rate,
-      fiatAmount: form.fiatAmount,
-      fees: form.fees,
-      status: 'pending_bank_details',
+  const handleInitialSubmit = () => {
+    if (!form.isValid || isSubmitting) return
+    setShowConfirmDialog(true)
+  }
+
+  const handleSubmit = async () => {
+    if (!form.isValid || isSubmitting) return
+
+    setIsSubmitting(true)
+    try {
+      const orderData = {
+        assetId: selectedAsset.id,
+        asset: selectedAsset.asset,
+        chain: selectedAsset.chain,
+        amount: parseFloat(form.state.amountInput.replace(/,/g, '')) || 0,
+        fiatCurrency: form.state.fiatCurrency,
+        rate,
+        fiatAmount: form.fiatAmount,
+        fees: form.fees,
+      }
+
+      const response = await fetch('/api/offramp/create-order', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(orderData),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to create offramp order')
+      }
+
+      const result = await response.json()
+      const order: OfframpOrder = result.order
+
+      const lockExpires = order.lockExpiresAt
+      setLockExpiresAt(lockExpires)
+      localStorage.setItem(LOCK_KEY, JSON.stringify({ expiresAt: lockExpires }))
+
+      localStorage.setItem(ORDER_KEY, JSON.stringify(order))
+      localStorage.setItem(`offramp:order:${order.id}`, JSON.stringify(order))
+
+      setShowConfirmDialog(false)
+
+      router.push(`/offramp/bank-details?order=${order.id}`)
+    } catch (err) {
+      console.error('Offramp order creation failed:', err)
+    } finally {
+      setIsSubmitting(false)
     }
-
-    localStorage.setItem(ORDER_KEY, JSON.stringify(order))
-    localStorage.setItem(`offramp:order:${order.id}`, JSON.stringify(order))
-    router.push(`/offramp/bank-details?order=${order.id}`)
   }
 
   if (loading) {
@@ -181,6 +225,7 @@ export function OfframpPageClient() {
             errors={form.errors}
             limits={form.limits}
             isCalculating={form.isCalculating}
+            isSubmitting={isSubmitting}
             isValid={form.isValid}
             lockCountdown={lockCountdown}
             onAssetChange={form.setAssetId}
@@ -188,7 +233,7 @@ export function OfframpPageClient() {
             onMax={form.setMaxAmount}
             onFiatChange={form.setFiatCurrency}
             onRefreshRate={refresh}
-            onSubmit={handleSubmit}
+            onSubmit={handleInitialSubmit}
           />
 
           <div className="space-y-6">
@@ -235,6 +280,80 @@ export function OfframpPageClient() {
           </div>
         </div>
       </main>
+
+      <Dialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirm your withdrawal</DialogTitle>
+            <DialogDescription>
+              Review the details below. Your order will only be created after you confirm.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-2">
+              <span className="text-sm text-muted-foreground">You are selling</span>
+              <span className="font-medium">
+                {form.state.amountInput || '0'} {selectedAsset.asset}
+              </span>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-2">
+              <span className="text-sm text-muted-foreground">You will receive</span>
+              <span className="font-medium text-primary">
+                {formatCurrency(form.fees.receiveAmount, form.state.fiatCurrency)}
+              </span>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-2">
+              <span className="text-sm text-muted-foreground">Exchange rate</span>
+              <div className="text-right">
+                <div className="font-medium">
+                  1 {selectedAsset.asset} = {formatCurrency(rate || 0, form.state.fiatCurrency)}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Rate lock:{' '}
+                  {lockCountdown !== null
+                    ? formatRateCountdown(lockCountdown)
+                    : '15:00 on submit'}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-2">
+              <span className="text-sm text-muted-foreground">Network fee</span>
+              <span className="font-medium">
+                {formatCurrency(form.fees.networkFee, form.state.fiatCurrency)}
+              </span>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 border-b border-border pb-2">
+              <span className="text-sm text-muted-foreground">Destination bank account</span>
+              <span className="max-w-[200px] text-right text-xs font-medium">
+                Entered on the next step
+              </span>
+            </div>
+
+            <div className="flex items-start justify-between gap-4">
+              <span className="text-sm text-muted-foreground">Estimated completion</span>
+              <span className="font-medium">1–3 business days</span>
+            </div>
+          </div>
+
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="outline"
+              onClick={() => setShowConfirmDialog(false)}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSubmit} disabled={isSubmitting}>
+              {isSubmitting ? 'Processing…' : 'Confirm and Pay'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

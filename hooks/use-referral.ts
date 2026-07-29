@@ -10,11 +10,21 @@ import {
   type ReferralRecord,
 } from '@/lib/referral'
 
+export interface ReferralStats {
+  code: string
+  ownerAddress: string
+  clickCount: number
+  conversionCount: number
+  totalRebatesEarned: number
+}
+
 export interface UseReferralReturn {
   /** This user's own referral code */
   myCode: string
   /** Stats for the referrer (referees count, rebates earned) */
   record: ReferralRecord | null
+  /** Analytics stats (clicks, conversions) */
+  stats: ReferralStats | null
   /** Code the current user applied (for their own discount) */
   appliedCode: string | null
   /** Whether the 10% first-ramp discount is active */
@@ -27,18 +37,24 @@ export interface UseReferralReturn {
 export function useReferral(walletAddress: string): UseReferralReturn {
   const myCode = walletAddress ? generateReferralCode(walletAddress) : ''
   const [record, setRecord] = useState<ReferralRecord | null>(null)
+  const [stats, setStats] = useState<ReferralStats | null>(null)
   const [appliedCode, setAppliedCode] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // Load applied code + fetch referrer stats
+  // Load applied code + fetch referrer stats + fetch analytics
   useEffect(() => {
     if (!walletAddress) return
     setAppliedCode(getAppliedReferralCode())
 
     setLoading(true)
-    fetch(`/api/referral?wallet=${encodeURIComponent(walletAddress)}`)
-      .then((r) => r.json())
-      .then((data: ReferralRecord) => setRecord(data))
+    Promise.all([
+      fetch(`/api/referral?wallet=${encodeURIComponent(walletAddress)}`).then((r) => r.json()),
+      fetch(`/api/referral/stats?wallet=${encodeURIComponent(walletAddress)}`).then((r) => r.json()),
+    ])
+      .then(([recordData, statsData]) => {
+        setRecord(recordData)
+        setStats(statsData)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [walletAddress])
@@ -67,7 +83,7 @@ export function useReferral(walletAddress: string): UseReferralReturn {
   const discountActive =
     !!appliedCode && !isReferralDiscountConsumed()
 
-  return { myCode, record, appliedCode, discountActive, applyCode, loading }
+  return { myCode, record, stats, appliedCode, discountActive, applyCode, loading }
 }
 
 export { REFERRAL_DISCOUNT_PCT }

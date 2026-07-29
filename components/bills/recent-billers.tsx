@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Clock, Star, ArrowRight } from 'lucide-react'
 import { BillerIcon } from '@/components/bills/biller-icons'
 import { cn } from '@/lib/utils'
+import { EmptyStateIllustration } from '@/components/ui/empty-state-illustration'
 
 interface Biller {
   id: string
@@ -66,7 +67,20 @@ export function RecentBillers({ billers, searchQuery, loading }: RecentBillersPr
   }
 
   if (filteredBillers.length === 0 && searchQuery) {
-    return null // Handled by category grid
+    return (
+      <section className="space-y-6 mt-12">
+        <h2 className="text-2xl font-bold font-cal-sans tracking-tight">Recent Billers</h2>
+        <div className="flex flex-col items-center gap-4 py-16 text-center rounded-2xl border border-white/5 bg-gradient-to-b from-white/[0.03] to-transparent backdrop-blur-md">
+          <EmptyStateIllustration variant="search" />
+          <div>
+            <p className="font-semibold text-foreground">No billers found</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              We couldn&apos;t find any billers matching &quot;{searchQuery}&quot;
+            </p>
+          </div>
+        </div>
+      </section>
+    )
   }
 
   return (

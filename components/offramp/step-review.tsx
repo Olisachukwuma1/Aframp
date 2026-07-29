@@ -7,6 +7,7 @@ import { ImportantInfo } from './important-info'
 import { SettlementAddress } from './settlement-address'
 import { ConfirmationChecklist } from './confirmation-checklist'
 import { MOCK_ORDER, OfframpOrder } from '@/lib/offramp/mock-api'
+import { getSelectedOfframpAccount } from '@/lib/offramp/bank-service'
 import { useRouter } from 'next/navigation'
 import { useWallet } from '@/hooks/useWallet'
 import { buildOfframpPaymentXdr } from '@/lib/offramp/stellar-offramp'
@@ -30,8 +31,23 @@ export function StepReview() {
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
   React.useEffect(() => {
-    // Simulate fetching order data
-    setOrder(MOCK_ORDER)
+    // Simulate fetching order data, overlaid with the destination account the
+    // customer chose on the bank details step — the mock order is Nigerian, and
+    // showing it back to a Kenyan or Ghanaian customer would be wrong.
+    const account = getSelectedOfframpAccount()
+    setOrder(
+      account
+        ? {
+            ...MOCK_ORDER,
+            fiatCurrency: account.currency,
+            bankDetails: {
+              bankName: account.bankName,
+              accountNumber: account.accountNumber,
+              accountName: account.accountName,
+            },
+          }
+        : MOCK_ORDER
+    )
   }, [])
 
   if (!order)
