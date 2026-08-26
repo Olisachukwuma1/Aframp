@@ -32,6 +32,9 @@ const customJestConfig = {
   coverageReporters: ['json-summary', 'json', 'lcov', 'text'],
   testMatch: ['**/__tests__/**/*.[jt]s?(x)', '**/?(*.)+(spec|test).[jt]s?(x)'],
   testPathIgnorePatterns: ['/node_modules/', '/.next/', '/helpcenter/', '/.claude/'],
+  // React 19's scheduler keeps a MessagePort open after component tests finish,
+  // which would otherwise leave `jest` hanging (and hang the CI test job).
+  forceExit: true,
 }
 
 module.exports = async () => {
