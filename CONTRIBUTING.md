@@ -25,6 +25,8 @@ Thank you for your interest in contributing to AFRAMP! This guide will help you 
 
 ### Setup
 
+For the backend client contract used by the frontend, see the OpenAPI spec in [openapi.yaml](openapi.yaml). It documents the endpoints surfaced by [lib/api.ts](lib/api.ts) and is kept in sync with API changes.
+
 1. **Fork the repository**
 
    ```bash

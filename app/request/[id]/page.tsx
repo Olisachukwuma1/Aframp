@@ -91,6 +91,9 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
   }
 
   const amount = `${formatStroops(request.amount_stroops)} ${request.asset}`
+  const paidAmount = request.amount_paid_stroops ?? 0n
+  const paidRatio = request.amount_stroops > 0n ? Number((paidAmount * 100n) / request.amount_stroops) : 0
+  const hasPartialPayment = request.allow_partial || paidAmount > 0n
 
   if (request.status === 'paid') {
     return (
@@ -156,6 +159,23 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
             address below and include the reference exactly.
           </AlertDescription>
         </Alert>
+      )}
+
+      {hasPartialPayment && (
+        <div className="bg-muted/50 rounded-2xl p-4 text-sm">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <span className="text-muted-foreground">Paid so far</span>
+            <span className="font-semibold tabular-nums">
+              {formatStroops(paidAmount)} / {formatStroops(request.amount_stroops)} {request.asset}
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-background">
+            <div
+              className="h-full rounded-full bg-primary"
+              style={{ width: `${Math.min(100, Math.max(0, paidRatio))}%` }}
+            />
+          </div>
+        </div>
       )}
 
       <dl className="bg-muted/50 space-y-3 rounded-2xl p-4 text-sm">
