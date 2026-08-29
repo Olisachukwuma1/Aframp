@@ -52,7 +52,10 @@ export default function TransactionsPage() {
         setBalances(nextBalances)
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === 'AbortError') return
-        if (cause instanceof ApiError && cause.status === 0) throw cause
+        if (cause instanceof ApiError && cause.status === 0) {
+          setError('backend-down')
+          return
+        }
         setError(cause instanceof Error ? cause.message : 'Could not load your payments')
       }
     },
@@ -65,7 +68,17 @@ export default function TransactionsPage() {
     return () => controller.abort()
   }, [load])
 
-  if (error) return <ErrorState message={error} onRetry={() => void load()} />
+  if (error)
+    return (
+      <ErrorState
+        message={
+          error === 'backend-down'
+            ? "We can't connect to the payment server right now. Please try again in a moment."
+            : error
+        }
+        onRetry={() => void load()}
+      />
+    )
   if (!payments) {
     return (
       <div className="flex justify-center py-16">

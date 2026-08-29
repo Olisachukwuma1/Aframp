@@ -53,7 +53,11 @@ export default function WithdrawPage() {
         setWithdrawals(nextWithdrawals)
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === 'AbortError') return
-        if (cause instanceof ApiError && cause.status === 0) throw cause
+        if (cause instanceof ApiError && cause.status === 0) {
+          setError('backend-down')
+          setBalances([])
+          return
+        }
         setError(cause instanceof Error ? cause.message : 'Could not load your cash-out details')
         setBalances([])
       }
@@ -138,7 +142,11 @@ export default function WithdrawPage() {
         >
           {error && (
             <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
+              <AlertDescription>
+                {error === 'backend-down'
+                  ? "We can't connect to the payment server right now. Please try again in a moment."
+                  : error}
+              </AlertDescription>
             </Alert>
           )}
 
