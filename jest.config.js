@@ -30,6 +30,7 @@ const customJestConfig = {
     },
   },
   testMatch: ['**/__tests__/**/*.[jt]s?(x)', '**/?(*.)+(spec|test).[jt]s?(x)'],
+  testPathIgnorePatterns: ['/node_modules/', '/.next/', '/helpcenter/'],
 }
 
 module.exports = createJestConfig(customJestConfig)
