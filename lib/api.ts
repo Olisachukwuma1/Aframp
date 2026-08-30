@@ -255,4 +255,34 @@ export const api = {
 
   listWithdrawals: (token: string, limit = 50, signal?: AbortSignal) =>
     request<Withdrawal[]>(`/withdrawals?limit=${limit}`, { token, signal }),
+
+  closeMerchantAccount: (token: string, destinationAddress: string) =>
+    request<{ success: boolean }>('/merchant/close', {
+      method: 'POST',
+      token,
+      body: { destination_address: destinationAddress },
+    }),
+
+  // ZAR onramp via Ozow
+  createOzowPayment: (
+    token: string,
+    amountZAR: number,
+    bankCode: string,
+    returnUrl: string
+  ) =>
+    request<{ payment_url: string; transaction_id: string }>('/onramp/ozow/initiate', {
+      method: 'POST',
+      token,
+      body: {
+        amount: amountZAR,
+        bank_code: bankCode,
+        return_url: returnUrl,
+      },
+    }),
+
+  verifyOzowPayment: (token: string, transactionId: string) =>
+    request<{ status: 'pending' | 'completed' | 'failed'; tx_hash?: string }>(
+      `/onramp/ozow/verify/${transactionId}`,
+      { token }
+    ),
 }
