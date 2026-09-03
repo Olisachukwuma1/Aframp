@@ -16,7 +16,7 @@ const BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:3000').re
  * Amount fields are `i64` on the wire. JSON.parse would silently round anything
  * past 2^53, so these keys are re-quoted before parsing and revived as bigint.
  */
-const BIGINT_KEYS = new Set(['amount_stroops', 'available', 'pending'])
+const BIGINT_KEYS = new Set(['amount_stroops', 'available', 'pending', 'fee_stroops', 'network_fee_stroops', 'total_stroops'])
 
 /**
  * There are no refresh tokens — a 24h expiry just starts returning 401. The
@@ -141,8 +141,27 @@ export interface Withdrawal {
   updated_at: string
 }
 
-/** Exported for tests: revives bigint wire values that JSON.parse would silently round. */
-export function parseWithBigInts<T>(text: string): T {
+export interface FeeEstimate {
+  fee_stroops: bigint
+  network_fee_stroops: bigint
+  total_stroops: bigint
+}
+
+export interface Remittance {
+  id: UUID
+  merchant_id: UUID
+  destination_address: string
+  amount_stroops: bigint
+  asset: string
+  memo: string | null
+  status: 'pending' | 'submitted' | 'confirmed' | 'failed'
+  tx_hash: string | null
+  failure_reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+function parseWithBigInts<T>(text: string): T {
   const quoted = text.replace(/"(amount_stroops|available|pending)"\s*:\s*(-?\d+)/g, '"$1":"$2"')
   return JSON.parse(quoted, (key, value) =>
     BIGINT_KEYS.has(key) && typeof value === 'string' ? BigInt(value) : value
@@ -295,4 +314,36 @@ export const api = {
 
   listWithdrawals: (token: string, limit = 50, signal?: AbortSignal) =>
     request<Withdrawal[]>(`/withdrawals?limit=${limit}`, { token, signal }),
+
+  getRemittanceFeeEstimate: (
+    token: string,
+    amountStroops: bigint,
+    asset = 'XLM',
+    signal?: AbortSignal
+  ) =>
+    request<FeeEstimate>(`/remittance/estimate?amount_stroops=${amountStroops}&asset=${asset}`, {
+      token,
+      signal,
+    }),
+
+  createRemittance: (
+    token: string,
+    destinationAddress: string,
+    amountStroops: bigint,
+    asset = 'XLM',
+    memo?: string
+  ) =>
+    request<Remittance>('/remittance', {
+      method: 'POST',
+      token,
+      body: {
+        destination_address: destinationAddress,
+        amount_stroops: amountStroops,
+        asset,
+        ...(memo ? { memo } : {}),
+      },
+    }),
+
+  listRemittances: (token: string, limit = 50, signal?: AbortSignal) =>
+    request<Remittance[]>(`/remittances?limit=${limit}`, { token, signal }),
 }
