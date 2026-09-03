@@ -2,7 +2,7 @@ name: Uptime Monitor
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # Every 15 minutes
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -13,61 +13,145 @@ jobs:
   monitor:
     name: Check Production Uptime
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - name: Check routes
-        id: checks
-        run: |
-          down=""
-          for path in / /login /signup /home /charge /transactions /withdraw /wallet; do
-            status=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://aframp.vercel.app${path}" || echo "000")
-            if [ "$status" = "200" ]; then
-              echo "✅ ${path} up"
-            else
-              echo "⚠️ ${path} returned HTTP ${status}"
-              down="${down:+${down},}${path} (HTTP ${status})"
-            fi
-          done
-          echo "down=${down}" >> "$GITHUB_OUTPUT"
+      - name: Restore prior failure count
+        uses: actions/cache@v4
+        with:
+          path: .uptime-monitor-state.json
+          key: uptime-monitor-state-${{ github.repository }}
+          restore-keys: uptime-monitor-state-
 
-      - name: Alert on downtime
-        if: steps.checks.outputs.down != ''
+      - name: Check homepage
+        id: homepage
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://app.aframp.com/ || echo "000")
+          if [ "$STATUS" != "200" ]; then
+            echo "status=down" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Homepage returned HTTP $STATUS"
+          else
+            echo "status=up" >> "$GITHUB_OUTPUT"
+            echo "✅ Homepage up"
+          fi
+
+      - name: Check login page
+        id: login
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://app.aframp.com/login || echo "000")
+          if [ "$STATUS" != "200" ]; then
+            echo "status=down" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Login page returned HTTP $STATUS"
+          else
+            echo "status=up" >> "$GITHUB_OUTPUT"
+            echo "✅ Login page up"
+          fi
+
+      - name: Check wallet dashboard
+        id: wallet
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://app.aframp.com/wallet || echo "000")
+          if [ "$STATUS" != "200" ]; then
+            echo "status=down" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Wallet page returned HTTP $STATUS"
+          else
+            echo "status=up" >> "$GITHUB_OUTPUT"
+            echo "✅ Wallet page up"
+          fi
+
+      - name: Track consecutive failures
+        id: failures
+        shell: bash
+        run: |
+          STATE_FILE=.uptime-monitor-state.json
+          if [ -f "$STATE_FILE" ]; then
+            FAILURES=$(jq -r '.failures // 0' "$STATE_FILE")
+          else
+            FAILURES=0
+          fi
+
+          DOWN=false
+          if [ "${{ steps.homepage.outputs.status }}" = "down" ] || \
+             [ "${{ steps.login.outputs.status }}" = "down" ] || \
+             [ "${{ steps.wallet.outputs.status }}" = "down" ]; then
+            DOWN=true
+          fi
+
+          if [ "$DOWN" = "true" ]; then
+            FAILURES=$((FAILURES + 1))
+          else
+            FAILURES=0
+          fi
+
+          printf '{"failures": %s}\n' "$FAILURES" > "$STATE_FILE"
+          echo "count=$FAILURES" >> "$GITHUB_OUTPUT"
+          echo "down=$DOWN" >> "$GITHUB_OUTPUT"
+
+      - name: Create outage issue after 3 failures
+        if: ${{ steps.failures.outputs.count == '3' }}
         uses: actions/github-script@v7
         with:
           script: |
-            const down = '${{ steps.checks.outputs.down }}'
-            const affected = down
-              .split(',')
-              .filter(Boolean)
-              .map((endpoint) => `  • ${endpoint}`)
-              .join('\n')
-            const title = '🚨 AFRAMP endpoint(s) are DOWN'
+            const title = '🚨 AFRAMP production uptime alert';
             const body = [
-              '🚨 ALERT: AFRAMP endpoints are DOWN',
+              'The production site has failed the uptime checks for three consecutive runs.',
               '',
-              `Time: ${new Date().toISOString()}`,
+              'Affected endpoints:',
+              `- Homepage: ${{ steps.homepage.outputs.status }}`,
+              `- Login: ${{ steps.login.outputs.status }}`,
+              `- Wallet: ${{ steps.wallet.outputs.status }}`,
               '',
-              'Affected:',
-              affected,
-              '',
-              'Check: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-            ].join('\n')
+              'This issue will be auto-closed when the site responds again.'
+            ].join('\n');
 
-            const { data: existing } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'uptime',
-            })
-            if (existing.some((issue) => issue.title === title)) {
-              core.notice('An open uptime issue already exists — skipping duplicate.')
-              return
+            const { owner, repo } = context.repo;
+            const { data: issues } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', per_page: 100 });
+            const existing = issues.find((issue) => issue.title === title);
+
+            if (!existing) {
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title,
+                body,
+                labels: ['bug', 'uptime'],
+              });
             }
 
-            const issue = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title,
-              body,
-              labels: ['uptime'],
-            })
-            console.log(`Created issue #${issue.data.number}`)
+      - name: Close outage issue when restored
+        if: ${{ steps.failures.outputs.count == '0' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🚨 AFRAMP production uptime alert';
+            const { owner, repo } = context.repo;
+            const { data: issues } = await github.rest.issues.listForRepo({ owner, repo, state: 'open', per_page: 100 });
+            const openIssue = issues.find((issue) => issue.title === title);
+
+            if (openIssue) {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: openIssue.number,
+                state: 'closed',
+              });
+            }
+
+      - name: Alert on downtime
+        if: ${{ steps.failures.outputs.down == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const statuses = {
+              Homepage: '${{ steps.homepage.outputs.status }}',
+              Login: '${{ steps.login.outputs.status }}',
+              Wallet: '${{ steps.wallet.outputs.status }}',
+            };
+            const down = Object.entries(statuses)
+              .filter(([, v]) => v === 'down')
+              .map(([k]) => `  • ${k}`)
+              .join('\n');
+            console.log(
+              `🚨 ALERT: AFRAMP production endpoints are DOWN\n\nTime: ${new Date().toISOString()}\n\nAffected:\n${down}\n\nCheck: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            );
