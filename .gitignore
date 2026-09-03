@@ -9,3 +9,7 @@ build
 requirements.md
 .vercel
 .env*.local
+coverage/
+.claude 
+tsconfig.tsbuildinfo
+designs

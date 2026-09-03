@@ -5,6 +5,7 @@ import * as SelectPrimitive from '@radix-ui/react-select'
 import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { useDarkScope } from '@/components/dark-scope'
 
 function Select({ ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
   return <SelectPrimitive.Root data-slot="select" {...props} />
@@ -51,8 +52,9 @@ function SelectContent({
   align = 'center',
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
+  const darkScope = useDarkScope()
   return (
-    <SelectPrimitive.Portal>
+    <SelectPrimitive.Portal container={darkScope ?? undefined}>
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
