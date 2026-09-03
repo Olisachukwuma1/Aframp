@@ -100,6 +100,11 @@ jobs:
       - name: Run tests with coverage
         run: docker-compose -f docker-compose.test.yml run --rm aframp-test
 
+      - name: Check route bundle budget
+        run: |
+          npm run build:analyze
+          node scripts/check-bundle-budget.mjs
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
