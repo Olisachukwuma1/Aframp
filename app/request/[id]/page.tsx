@@ -38,7 +38,12 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
         return next
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === 'AbortError') return null
-        if (cause instanceof ApiError && cause.status === 0) throw cause
+        if (cause instanceof ApiError && cause.status === 0) {
+          // Backend is temporarily unreachable — surface the error but do NOT
+          // throw, so the polling loop can schedule another tick and recover.
+          setError('backend-down')
+          return null
+        }
         setError(cause instanceof Error ? cause.message : 'Could not load this charge')
         return null
       }
@@ -77,7 +82,14 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
   if (error && !request) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md items-center justify-center px-6">
-        <ErrorState message={error} onRetry={() => void load()} />
+        <ErrorState
+          message={
+            error === 'backend-down'
+              ? "We can't connect to the payment server right now. Please try again in a moment."
+              : error
+          }
+          onRetry={() => void load()}
+        />
       </main>
     )
   }
@@ -136,6 +148,17 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
         </p>
         <p className="font-display text-4xl font-semibold tracking-tight tabular-nums">{amount}</p>
       </header>
+
+      {error && (
+        <Alert>
+          <TriangleAlert className="size-4" aria-hidden />
+          <AlertDescription>
+            {error === 'backend-down'
+              ? "Can't reach the payment server — retrying automatically. The QR code is still valid."
+              : error}
+          </AlertDescription>
+        </Alert>
+      )}
 
       {request.sep7_uri ? (
         <div className="flex justify-center">

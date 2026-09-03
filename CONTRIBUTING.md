@@ -289,6 +289,12 @@ npm run test:coverage
 - **Target:** 80%+ for new code
 - **Metrics:** Lines, Statements, Functions, Branches
 
+### Codecov Setup
+
+This repository uploads coverage reports to Codecov in CI. Before opening or updating a PR, add the repository secret `CODECOV_TOKEN` in the GitHub repository settings under `Settings -> Secrets and variables -> Actions`.
+
+The token is required for the `codecov/codecov-action` step in the CI workflow to publish results to Codecov after `npm run test:coverage` completes.
+
 ---
 
 ## Submitting Changes
