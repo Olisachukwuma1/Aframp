@@ -315,35 +315,33 @@ export const api = {
   listWithdrawals: (token: string, limit = 50, signal?: AbortSignal) =>
     request<Withdrawal[]>(`/withdrawals?limit=${limit}`, { token, signal }),
 
-  getRemittanceFeeEstimate: (
-    token: string,
-    amountStroops: bigint,
-    asset = 'XLM',
-    signal?: AbortSignal
-  ) =>
-    request<FeeEstimate>(`/remittance/estimate?amount_stroops=${amountStroops}&asset=${asset}`, {
+  closeMerchantAccount: (token: string, destinationAddress: string) =>
+    request<{ success: boolean }>('/merchant/close', {
+      method: 'POST',
       token,
-      signal,
+      body: { destination_address: destinationAddress },
     }),
 
-  createRemittance: (
+  // ZAR onramp via Ozow
+  createOzowPayment: (
     token: string,
-    destinationAddress: string,
-    amountStroops: bigint,
-    asset = 'XLM',
-    memo?: string
+    amountZAR: number,
+    bankCode: string,
+    returnUrl: string
   ) =>
-    request<Remittance>('/remittance', {
+    request<{ payment_url: string; transaction_id: string }>('/onramp/ozow/initiate', {
       method: 'POST',
       token,
       body: {
-        destination_address: destinationAddress,
-        amount_stroops: amountStroops,
-        asset,
-        ...(memo ? { memo } : {}),
+        amount: amountZAR,
+        bank_code: bankCode,
+        return_url: returnUrl,
       },
     }),
 
-  listRemittances: (token: string, limit = 50, signal?: AbortSignal) =>
-    request<Remittance[]>(`/remittances?limit=${limit}`, { token, signal }),
+  verifyOzowPayment: (token: string, transactionId: string) =>
+    request<{ status: 'pending' | 'completed' | 'failed'; tx_hash?: string }>(
+      `/onramp/ozow/verify/${transactionId}`,
+      { token }
+    ),
 }
