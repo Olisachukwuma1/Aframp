@@ -125,7 +125,8 @@ export interface Withdrawal {
   updated_at: string
 }
 
-function parseWithBigInts<T>(text: string): T {
+/** Exported for tests: revives bigint wire values that JSON.parse would silently round. */
+export function parseWithBigInts<T>(text: string): T {
   const quoted = text.replace(/"(amount_stroops|available|pending)"\s*:\s*(-?\d+)/g, '"$1":"$2"')
   return JSON.parse(quoted, (key, value) =>
     BIGINT_KEYS.has(key) && typeof value === 'string' ? BigInt(value) : value
@@ -136,7 +137,7 @@ function parseWithBigInts<T>(text: string): T {
  * JSON.stringify throws on bigint, and `Number(stroops)` would silently round
  * past 2^53. This emits bigints as unquoted JSON integers instead.
  */
-function stringifyWithBigInts(value: unknown): string {
+export function stringifyWithBigInts(value: unknown): string {
   const marker = ' bigint '
   const json = JSON.stringify(value, (_key, raw) =>
     typeof raw === 'bigint' ? `${marker}${raw.toString()}${marker}` : raw
@@ -151,7 +152,8 @@ interface RequestOptions {
   signal?: AbortSignal
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+/** Exported for tests: the single fetch wrapper every `api.*` call funnels through. */
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, token, signal } = options
 
   let response: Response
