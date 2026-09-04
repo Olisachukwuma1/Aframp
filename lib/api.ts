@@ -161,7 +161,7 @@ export interface Remittance {
   updated_at: string
 }
 
-function parseWithBigInts<T>(text: string): T {
+export function parseWithBigInts<T>(text: string): T {
   const quoted = text.replace(/"(amount_stroops|available|pending)"\s*:\s*(-?\d+)/g, '"$1":"$2"')
   return JSON.parse(quoted, (key, value) =>
     BIGINT_KEYS.has(key) && typeof value === 'string' ? BigInt(value) : value
