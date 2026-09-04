@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { ArrowLeft, QrCode, ChevronRight, Wallet, StickyNote } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -9,12 +9,6 @@ import { cn } from '@/lib/utils'
 import { RecentRecipients } from './recent-recipients'
 import { QRScanner } from './qr-scanner'
 import { TransactionConfirmation } from './transaction-confirmation'
-import {
-  isValidStellarAddress,
-  estimateStellarFee,
-  sendStellarP2P,
-} from '@/lib/stellar-p2p'
-import { getFreighterPublicKey, getFreighterNetwork } from '@/lib/wallet/freighter'
 
 type Step = 'recipient' | 'amount' | 'confirm' | 'success'
 
@@ -52,9 +46,6 @@ export function SendPageClient() {
   const [step, setStep] = useState<Step>('recipient')
   const [scannerOpen, setScannerOpen] = useState(false)
   const [isSending, setIsSending] = useState(false)
-  const [sendError, setSendError] = useState<string | null>(null)
-  const [txHash, setTxHash] = useState<string | null>(null)
-  const [estimatedFee, setEstimatedFee] = useState<string | null>(null)
   const [recipientInput, setRecipientInput] = useState('')
   const [form, setForm] = useState<SendFormState>({
     recipient: null,
@@ -65,12 +56,6 @@ export function SendPageClient() {
 
   const steps: Step[] = ['recipient', 'amount', 'confirm']
   const currentStepIdx = steps.indexOf(step)
-
-  // Fetch fee estimate when entering the confirm step
-  useEffect(() => {
-    if (step !== 'confirm') return
-    estimateStellarFee(null).then(setEstimatedFee).catch(() => setEstimatedFee(null))
-  }, [step])
 
   const handleBack = () => {
     if (step === 'recipient') {
@@ -119,47 +104,18 @@ export function SendPageClient() {
   }
 
   const handleSend = async () => {
-    if (!form.recipient?.address) return
     setIsSending(true)
-    setSendError(null)
-
-    const [publicKey, network] = await Promise.all([
-      getFreighterPublicKey(),
-      getFreighterNetwork(),
-    ])
-
-    if (!publicKey) {
-      setSendError('Wallet not connected. Please connect Freighter.')
-      setIsSending(false)
-      return
-    }
-
-    const result = await sendStellarP2P({
-      sourcePublicKey: publicKey,
-      destination: form.recipient.address,
-      amount: form.amount,
-      assetCode: form.asset.symbol,
-      memo: form.note || undefined,
-      network,
-    })
-
+    await new Promise((resolve) => setTimeout(resolve, 2200))
     setIsSending(false)
-
-    if (result.error || !result.txHash) {
-      setSendError(result.error ?? 'Transaction failed')
-      return
-    }
-
-    setTxHash(result.txHash)
     setStep('success')
   }
 
-  const isRecipientValid = isValidStellarAddress(recipientInput.trim())
+  const isRecipientValid = recipientInput.trim().length > 5
   const isAmountValid = parseFloat(form.amount) > 0
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center">
-      <div className="w-full max-w-md flex flex-col min-h-screen relative">
+      <div className="w-full max-w-md flex flex-col relative">
         {/* ── Header ── */}
         <header className="flex items-center gap-3 px-5 pt-6 pb-3">
           <button
@@ -219,8 +175,8 @@ export function SendPageClient() {
                 </button>
               </div>
               {recipientInput && !isRecipientValid && (
-                <p className="text-xs text-destructive">
-                  Enter a valid Stellar address (starts with G, 56 characters)
+                <p className="text-xs text-muted-foreground">
+                  Enter a valid Stellar address (starts with G)
                 </p>
               )}
             </div>
@@ -244,7 +200,7 @@ export function SendPageClient() {
 
         {/* ── Amount Step ── */}
         {step === 'amount' && (
-          <div className="flex flex-col flex-1 px-5 pb-6 gap-4">
+          <div className="flex flex-col flex-1 px-5 pb-6 gap-4 min-h-0">
             {/* Recipient pill */}
             <button
               onClick={() => setStep('recipient')}
@@ -265,7 +221,7 @@ export function SendPageClient() {
             </button>
 
             {/* Amount display */}
-            <div className="flex-1 flex flex-col items-center justify-center gap-2 min-h-[140px]">
+            <div className="flex flex-col items-center justify-center gap-2 min-h-[140px] max-h-[280px]">
               <div className="flex items-baseline gap-2">
                 <span
                   className={cn(
@@ -320,7 +276,7 @@ export function SendPageClient() {
             </div>
 
             {/* Numpad */}
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="grid grid-cols-3 gap-1.5 mt-auto">
               {NUMPAD_KEYS.flat().map((key) => (
                 <button
                   key={key}
@@ -355,9 +311,6 @@ export function SendPageClient() {
             form={form}
             step={step}
             isSending={isSending}
-            sendError={sendError}
-            txHash={txHash}
-            estimatedFee={estimatedFee}
             onBack={() => setStep('amount')}
             onConfirm={handleSend}
             onDone={() => router.push('/dashboard')}

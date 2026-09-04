@@ -29,7 +29,7 @@ export default function ErrorLayout({ title, message, status, actions }: Props) 
               <Link
                 key={i}
                 href={action.href}
-                className="px-4 py-2 rounded-md bg-primary text-white"
+                className="px-4 py-2 rounded-md bg-primary text-primary-foreground"
               >
                 {action.label}
               </Link>
