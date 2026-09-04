@@ -3,14 +3,16 @@
 import { motion } from 'framer-motion'
 import { Wallet, Copy, Check, ExternalLink, BadgeCheck } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useState, useEffect } from 'react'
 
 interface WalletInfoProps {
   walletName: string
   walletAddress: string
+  loading?: boolean
 }
 
-export function WalletInfo({ walletName, walletAddress }: WalletInfoProps) {
+export function WalletInfo({ walletName, walletAddress, loading = false }: WalletInfoProps) {
   const [copied, setCopied] = useState(false)
   const [isVerified, setIsVerified] = useState(false)
 
@@ -29,6 +31,27 @@ export function WalletInfo({ walletName, walletAddress }: WalletInfoProps) {
     navigator.clipboard.writeText(walletAddress)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  if (loading) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="bg-card rounded-2xl p-6 border border-border shadow-sm"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Skeleton className="w-12 h-12 rounded-xl" />
+            <div className="space-y-2">
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="h-4 w-48" />
+            </div>
+          </div>
+          <Skeleton className="h-9 w-32" />
+        </div>
+      </motion.div>
+    )
   }
 
   return (

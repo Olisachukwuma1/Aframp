@@ -35,7 +35,10 @@ export function CountryFlag({ code, className }: { code: string; className?: str
         <rect width="24" height="8" x="0" y="0" fill="#DC2626" />
         <rect width="24" height="8" x="0" y="8" fill="#EAB308" />
         <rect width="24" height="8" x="0" y="16" fill="#15803D" />
-        <polygon points="12,9 13.1,11.2 15.6,11.5 13.8,13.3 14.2,15.8 12,14.6 9.8,15.8 10.2,13.3 8.4,11.5 10.9,11.2" fill="#111827" />
+        <polygon
+          points="12,9 13.1,11.2 15.6,11.5 13.8,13.3 14.2,15.8 12,14.6 9.8,15.8 10.2,13.3 8.4,11.5 10.9,11.2"
+          fill="#111827"
+        />
       </svg>
     )
   }
@@ -69,7 +72,9 @@ export function CountryFlag({ code, className }: { code: string; className?: str
   }
 
   return (
-    <span className={cn('inline-flex items-center justify-center text-[10px] font-semibold', baseClass)}>
+    <span
+      className={cn('inline-flex items-center justify-center text-[10px] font-semibold', baseClass)}
+    >
       {code}
     </span>
   )
