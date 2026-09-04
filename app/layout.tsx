@@ -1,70 +1,47 @@
 import type React from 'react'
 import type { Metadata, Viewport } from 'next'
-import { Manrope, Outfit, Space_Mono } from 'next/font/google'
-import { Analytics } from '@vercel/analytics/next'
+import { Atkinson_Hyperlegible } from 'next/font/google'
 import { ThemeProvider } from '@/components/theme-provider'
+import { SessionProvider } from '@/components/session-provider'
 import './globals.css'
 
-const manrope = Manrope({
+// The Aframp brand typeface — picked for legibility at small sizes,
+// which is what the balance and rate figures need.
+const atkinson = Atkinson_Hyperlegible({
   subsets: ['latin'],
-  variable: '--font-manrope',
-  display: 'swap',
-  preload: false,
-})
-
-const outfit = Outfit({
-  subsets: ['latin'],
-  variable: '--font-cal-sans',
-  display: 'swap',
-  preload: false,
-})
-
-const spaceMono = Space_Mono({
   weight: ['400', '700'],
-  subsets: ['latin'],
-  variable: '--font-instrument-sans',
+  variable: '--font-atkinson',
   display: 'swap',
-  preload: false,
 })
 
 export const metadata: Metadata = {
-  title: 'Aframp - Buy Crypto, Pay Bills & Send Money in Africa',
+  title: 'Aframp — Pay, Send & Buy Crypto in Africa',
   description:
-    "Africa's premier cNGN stablecoin payment platform. Buy crypto from ₦2,000, pay bills instantly, and send money across 12 African countries.",
-  keywords: [
-    'cNGN',
-    'stablecoin',
-    'crypto',
-    'Nigeria',
-    'Africa',
-    'payments',
-    'bills',
-    'fintech',
-    'Aframp',
-  ],
-  generator: 'v0.app',
+    "Buy crypto from as low as 2,000 cNGN. Pay bills, send money, and grow your business with Africa's first stablecoin payment platform.",
+  keywords: ['Aframp', 'cNGN', 'Stellar', 'Nigeria', 'crypto', 'payments', 'stablecoin'],
+  generator: 'Next.js',
 }
 
 export const viewport: Viewport = {
   themeColor: '#10b981',
 }
 
-// This is a server component by default
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body
-        className={`${manrope.variable} ${outfit.variable} ${spaceMono.variable} font-sans antialiased`}
-        suppressHydrationWarning
-      >
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
-          {children}
+    <html lang="en" className={atkinson.variable} suppressHydrationWarning>
+      <body className="font-sans antialiased" suppressHydrationWarning>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <SessionProvider>{children}</SessionProvider>
         </ThemeProvider>
-        <Analytics />
       </body>
     </html>
   )

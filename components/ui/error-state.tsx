@@ -13,7 +13,7 @@ export function ErrorState({ message = 'Failed to load data.', onRetry }: ErrorS
       {onRetry && (
         <button
           onClick={onRetry}
-          className="mt-2 px-4 py-2 bg-primary text-white rounded hover:bg-primary/80 transition"
+          className="mt-2 px-4 py-2 bg-primary text-primary-foreground rounded hover:bg-primary/80 transition"
         >
           Retry
         </button>

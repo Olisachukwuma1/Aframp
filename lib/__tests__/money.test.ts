@@ -1,0 +1,59 @@
+import { formatStroops, isWholeKobo, parseAmountToStroops, STROOPS_PER_UNIT } from '@/lib/money'
+
+describe('formatStroops', () => {
+  it('formats a whole unit with no fraction', () => {
+    expect(formatStroops(STROOPS_PER_UNIT)).toBe('1')
+  })
+
+  it('drops trailing zeros in the fraction', () => {
+    expect(formatStroops(25_000_000n)).toBe('2.5')
+  })
+
+  it('formats a negative amount', () => {
+    expect(formatStroops(-25_000_000n)).toBe('-2.5')
+  })
+
+  it('formats zero', () => {
+    expect(formatStroops(0n)).toBe('0')
+  })
+
+  it('adds thousands separators to the whole part', () => {
+    expect(formatStroops(12_345n * STROOPS_PER_UNIT)).toBe('12,345')
+  })
+})
+
+describe('parseAmountToStroops', () => {
+  it('parses a whole number', () => {
+    expect(parseAmountToStroops('2')).toBe(2n * STROOPS_PER_UNIT)
+  })
+
+  it('parses a decimal amount', () => {
+    expect(parseAmountToStroops('2.5')).toBe(25_000_000n)
+  })
+
+  it('rejects more than 7 decimal places rather than rounding', () => {
+    expect(parseAmountToStroops('1.12345678')).toBeNull()
+  })
+
+  it('rejects malformed input', () => {
+    expect(parseAmountToStroops('abc')).toBeNull()
+    expect(parseAmountToStroops('')).toBeNull()
+    expect(parseAmountToStroops('.')).toBeNull()
+  })
+
+  it('round-trips through formatStroops', () => {
+    const stroops = parseAmountToStroops('123.4567')
+    expect(stroops).not.toBeNull()
+    expect(formatStroops(stroops!)).toBe('123.4567')
+  })
+})
+
+describe('isWholeKobo', () => {
+  it('accepts an amount that is a whole number of kobo', () => {
+    expect(isWholeKobo(500_000_000n)).toBe(true)
+  })
+
+  it('rejects an amount smaller than one kobo', () => {
+    expect(isWholeKobo(1n)).toBe(false)
+  })
+})

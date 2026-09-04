@@ -200,7 +200,7 @@ export function SendPageClient() {
 
         {/* ── Amount Step ── */}
         {step === 'amount' && (
-          <div className="flex flex-col flex-1 px-5 pb-6 gap-4">
+          <div className="flex flex-col flex-1 px-5 pb-6 gap-4 min-h-0">
             {/* Recipient pill */}
             <button
               onClick={() => setStep('recipient')}
@@ -276,7 +276,7 @@ export function SendPageClient() {
             </div>
 
             {/* Numpad */}
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="grid grid-cols-3 gap-1.5 mt-auto">
               {NUMPAD_KEYS.flat().map((key) => (
                 <button
                   key={key}

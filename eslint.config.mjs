@@ -1,15 +1,35 @@
-import nextPlugin from 'eslint-config-next'
+import nextPlugin from '@next/eslint-plugin-next'
+import jsxA11y from 'eslint-plugin-jsx-a11y'
+import prettierConfig from 'eslint-config-prettier'
 import tseslint from 'typescript-eslint'
 
+// `eslint-config-next`'s package only ships a legacy eslintrc-format config,
+// which unconditionally loads @rushstack/eslint-patch on require and breaks
+// under current ESLint — see https://github.com/microsoft/rushstack/issues.
+// Going straight to the underlying plugin's own flat-config export sidesteps
+// that patch entirely.
 const config = [
   {
-    ignores: ['.next/**', 'node_modules/**', 'out/**', 'build/**', '*.d.ts'],
+    // public/sw.js and workbox-*.js are generated PWA build output, not
+    // hand-written source — coverage/ is the Jest coverage report.
+    ignores: [
+      '.next/**',
+      'node_modules/**',
+      'out/**',
+      'build/**',
+      'coverage/**',
+      'public/**',
+      '.claude/**',
+      '*.d.ts',
+    ],
   },
-  ...nextPlugin,
+  nextPlugin.flatConfig.coreWebVitals,
+  jsxA11y.flatConfigs.recommended,
   ...tseslint.configs.recommended,
   {
     rules: {
       'no-console': ['error', { allow: ['warn', 'error'] }],
+      'no-debugger': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': ['warn', { ignoreRestArgs: true }],
       '@typescript-eslint/explicit-function-return-type': 'off',
@@ -23,6 +43,16 @@ const config = [
       '@typescript-eslint/no-require-imports': 'off',
     },
   },
+  {
+    // CLI scripts: console output is the interface, and they run directly
+    // via `node`, so CommonJS require() is the point rather than a mistake.
+    files: ['scripts/**/*.js'],
+    rules: {
+      'no-console': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  prettierConfig,
 ]
 
 export default config

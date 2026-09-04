@@ -5,8 +5,8 @@ export default function NotFound() {
     <ErrorLayout
       status={404}
       title="Page not found"
-      message="The page you’re looking for doesn’t exist."
-      actions={[{ label: 'Go Home', href: '/' }]}
+      message="That page doesn't exist, or it moved."
+      actions={[{ label: 'Back to start', href: '/' }]}
     />
   )
 }

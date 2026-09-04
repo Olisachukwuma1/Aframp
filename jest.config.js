@@ -1,3 +1,4 @@
+const path = require('path')
 const nextJest = require('next/jest')
 
 const createJestConfig = nextJest({
@@ -5,8 +6,12 @@ const createJestConfig = nextJest({
 })
 
 const customJestConfig = {
-  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
+  setupFilesAfterEnv: [path.resolve(__dirname, './jest.setup.ts')],
   testEnvironment: 'jest-environment-jsdom',
+  testEnvironmentOptions: {
+    customExportConditions: [''],
+  },
+  modulePathIgnorePatterns: ['<rootDir>/helpcenter/', '<rootDir>/.claude/'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },
@@ -21,16 +26,18 @@ const customJestConfig = {
     '!**/coverage/**',
     '!**/jest.config.js',
   ],
-  coverageThreshold: {
-    global: {
-      branches: 70,
-      functions: 70,
-      lines: 70,
-      statements: 70,
-    },
-  },
+  // A repo-wide global threshold can't be met while most of the codebase has
+  // no tests yet — real enforcement is scripts/check-diff-coverage.js, which
+  // requires 80% coverage only on files a PR actually adds or changes.
+  coverageReporters: ['json-summary', 'json', 'lcov', 'text'],
   testMatch: ['**/__tests__/**/*.[jt]s?(x)', '**/?(*.)+(spec|test).[jt]s?(x)'],
   testPathIgnorePatterns: ['/node_modules/', '/.next/', '/helpcenter/'],
 }
 
-module.exports = createJestConfig(customJestConfig)
+module.exports = async () => {
+  const config = await createJestConfig(customJestConfig)()
+  config.transformIgnorePatterns = [
+    '/node_modules/(?!(rettime|until-async|strict-event-emitter|@mswjs|@open-draft)/)',
+  ]
+  return config
+}
