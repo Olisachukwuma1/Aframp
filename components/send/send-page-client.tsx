@@ -115,7 +115,7 @@ export function SendPageClient() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center">
-      <div className="w-full max-w-md flex flex-col min-h-screen relative">
+      <div className="w-full max-w-md flex flex-col relative">
         {/* ── Header ── */}
         <header className="flex items-center gap-3 px-5 pt-6 pb-3">
           <button
@@ -221,7 +221,7 @@ export function SendPageClient() {
             </button>
 
             {/* Amount display */}
-            <div className="flex-1 flex flex-col items-center justify-center gap-2 min-h-[120px] md:min-h-[140px] shrink-0 overflow-hidden">
+            <div className="flex flex-col items-center justify-center gap-2 min-h-[140px] max-h-[280px]">
               <div className="flex items-baseline gap-2">
                 <span
                   className={cn(

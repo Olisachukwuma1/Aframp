@@ -31,10 +31,7 @@ const customJestConfig = {
   // requires 80% coverage only on files a PR actually adds or changes.
   coverageReporters: ['json-summary', 'json', 'lcov', 'text'],
   testMatch: ['**/__tests__/**/*.[jt]s?(x)', '**/?(*.)+(spec|test).[jt]s?(x)'],
-  testPathIgnorePatterns: ['/node_modules/', '/.next/', '/helpcenter/', '/.claude/'],
-  // React 19's scheduler keeps a MessagePort open after component tests finish,
-  // which would otherwise leave `jest` hanging (and hang the CI test job).
-  forceExit: true,
+  testPathIgnorePatterns: ['/node_modules/', '/.next/', '/helpcenter/'],
 }
 
 module.exports = async () => {
