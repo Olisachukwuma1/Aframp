@@ -15,12 +15,13 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { api, ApiError, type Balance, type Withdrawal, type WithdrawalStatus } from '@/lib/api'
-import { formatStroops, isWholeKobo, parseAmountToStroops } from '@/lib/money'
+import { formatStroops, parseAmountToStroops } from '@/lib/money'
 import { useAuthenticatedSession } from '@/components/session-provider'
 import {
   getBankOptions,
   getWithdrawableAssets,
   getWithdrawalAssetConfig,
+  validateWithdrawal,
   type WithdrawalAsset,
 } from '@/lib/withdraw'
 
@@ -73,7 +74,12 @@ export default function WithdrawPage() {
 
   const withdrawableAssets = useMemo(() => getWithdrawableAssets(balances ?? []), [balances])
   const config = getWithdrawalAssetConfig(asset)
+  // Spendable balance in stroops (1 unit = 10,000,000) — never display raw,
+  // always via `formatStroops` from lib/money.ts.
   const available = balances?.find((balance) => balance.asset === asset)?.available ?? 0n
+  // `amount` is the user's decimal string; this is the same value in stroops,
+  // which is what every comparison below and the backend both expect. Null when
+  // unparseable. See lib/money.ts for the unit and the two helpers.
   const stroops = parseAmountToStroops(amount)
 
   const selectAsset = useCallback((next: WithdrawalAsset) => {
@@ -100,12 +106,15 @@ export default function WithdrawPage() {
     if (accountNumber.length !== config.accountNumberLength) {
       return `Account numbers are ${config.accountNumberLength} digits.`
     }
+    if (!/^\d+$/.test(accountNumber)) {
+      return 'Account number must contain digits only.'
+    }
     return null
   }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
-    const problem = validate()
+    const problem = validateWithdrawal(stroops, config, available, bankCode, accountNumber)
     if (problem) {
       setError(problem)
       return
@@ -114,6 +123,8 @@ export default function WithdrawPage() {
     setSubmitting(true)
     setError(null)
     try {
+      // `stroops!` is the amount in stroops, not units — validate() has already
+      // ruled out null by this point. See lib/money.ts.
       await api.createWithdrawal(token, stroops!, bankCode, accountNumber, asset)
       setAmount('')
       setBankCode('')
@@ -139,6 +150,8 @@ export default function WithdrawPage() {
     <div>
       <header>
         <h1 className="text-2xl font-bold tracking-tight">Cash out</h1>
+        {/* `available` is stroops; formatStroops (lib/money.ts) is the only
+            sanctioned way to turn it into a readable figure. */}
         <p className="text-dim mt-1 text-sm">
           {formatStroops(available)} {asset} available
         </p>
@@ -248,6 +261,8 @@ export default function WithdrawPage() {
               {withdrawals.map((withdrawal) => (
                 <li key={withdrawal.id} className="space-y-1 py-3">
                   <div className="flex items-center justify-between gap-3">
+                    {/* amount_stroops arrives as a bigint from the backend —
+                        formatStroops (lib/money.ts) divides by 10,000,000. */}
                     <span className="font-bold tabular-nums text-white">
                       {formatStroops(withdrawal.amount_stroops)} {withdrawal.asset}
                     </span>

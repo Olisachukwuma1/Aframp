@@ -1,22 +1,48 @@
 /**
  * Typed client for the Aframp Pay backend (Rust/Axum, see Aframp-backend).
  *
- * The backend is a separate origin, so every call goes straight from the browser
- * to it with a bearer token — there is no Next.js API layer in between.
+ * Every call goes through this app's own `/backend/*` rewrite (see
+ * next.config.mjs), which forwards it server-side to the real backend origin
+ * (`NEXT_API_URL`) — the browser never learns that origin directly.
+ *
+ * That rewrite is same-origin as far as the browser is concerned, so it
+ * attaches cookies to mutating requests without any CORS preflight. Every
+ * state-changing call therefore also double-submits the CSRF token from
+ * `lib/csrf.ts`, which `middleware.ts` verifies before the request is
+ * forwarded. See docs/SECURITY_CSRF.md.
  *
  * Errors always come back as `{ "error": "message" }`.
  */
 
+import { CSRF_HEADER_NAME, getCsrfToken, isMutatingMethod } from '@/lib/csrf'
+
 /** Backend ids are UUIDs; aliased for readability, not validated here. */
 type UUID = string
 
-const BASE_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://127.0.0.1:3000').replace(/\/$/, '')
+const BASE_URL = '/backend'
 
 /**
+ * Every backend wire field carrying a large integer must be listed here.
+ * JSON.parse would silently round values past 2^53, so keep this set in sync
+ * with the field-name alternatives in parseWithBigInts' pre-parse regex.
+ *
  * Amount fields are `i64` on the wire. JSON.parse would silently round anything
  * past 2^53, so these keys are re-quoted before parsing and revived as bigint.
+ *
+ * **Every one of these is denominated in stroops, never in whole asset units.**
+ * 1 unit = 10,000,000 stroops (`STROOPS_PER_UNIT` in lib/money.ts), so
+ * `amount_stroops: 500000000` is 50 cNGN. A new amount field has to be added
+ * here as well as to its interface, or `parseWithBigInts` will hand back a
+ * lossy `number` and the value silently rounds.
  */
-const BIGINT_KEYS = new Set(['amount_stroops', 'available', 'pending', 'fee_stroops', 'network_fee_stroops', 'total_stroops'])
+const BIGINT_KEYS = new Set([
+  'amount_stroops',
+  'available',
+  'pending',
+  'fee_stroops',
+  'network_fee_stroops',
+  'total_stroops',
+])
 
 /**
  * There are no refresh tokens — a 24h expiry just starts returning 401. The
@@ -32,11 +58,25 @@ export function setUnauthorizedHandler(handler: (() => void) | null) {
 export class ApiError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    /** Machine-readable error code from the backend, e.g. `OTP_EXPIRED`. */
+    readonly code?: string,
+    /** Which request field the error applies to, for field-level validation errors. */
+    readonly field?: string
   ) {
     super(message)
     this.name = 'ApiError'
   }
+}
+
+/**
+ * True for a network failure or CORS rejection (see `request()`'s catch
+ * block) — as opposed to a real validation/auth error the backend actually
+ * responded to. Callers use this to pick a calmer, non-alarming
+ * presentation: it's a connectivity blip, not something the user did wrong.
+ */
+export function isOffline(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.status === 0
 }
 
 export interface AuthResponse {
@@ -49,10 +89,30 @@ export interface AuthResponse {
   merchant_id: UUID | null
 }
 
+/**
+ * What `/signup` always returns, and what `/login` returns for any account
+ * with a verified phone (i.e. every account created since OTP shipped) —
+ * neither endpoint issues a session directly anymore. `/verify-otp` is the
+ * only call that ever turns this into an `AuthResponse`.
+ */
+export interface OtpChallengeResponse {
+  challenge_id: UUID
+  expires_in_secs: number
+}
+
+/**
+ * `/login`'s response is conditional: a challenge for any phone-verified
+ * account (the normal case), or a session directly for a legacy account
+ * with no phone on file (only possible pre-OTP-rollout). Narrow with
+ * `'challenge_id' in result`.
+ */
+export type LoginResult = AuthResponse | OtpChallengeResponse
+
 export interface Me {
   user_id: UUID
   email: string
   name: string
+  is_admin: boolean
   created_at: string
   merchant_id: UUID | null
   merchant_name: string | null
@@ -69,7 +129,9 @@ export interface Wallet {
 export interface Balance {
   merchant_id: UUID
   asset: string
+  /** Spendable now, in stroops. Format with `formatStroops` — see lib/money.ts. */
   available: bigint
+  /** Incoming but not yet spendable, in stroops. Format with `formatStroops`. */
   pending: bigint
   updated_at: string
 }
@@ -82,6 +144,7 @@ export interface Payment {
   wallet_id: UUID
   wallet_address: string
   tx_hash: string
+  /** Amount received, in stroops. Format with `formatStroops` — see lib/money.ts. */
   amount_stroops: bigint
   asset: string
   network: string
@@ -98,7 +161,9 @@ export interface PaymentRequest {
   merchant_id: UUID
   address: string
   network: string
+  /** Amount asked for, in stroops. Format with `formatStroops` — see lib/money.ts. */
   amount_stroops: bigint
+  /** Amount actually received so far, in stroops. Below `amount_stroops` when partial. */
   amount_paid_stroops?: bigint
   asset: string
   memo: string
@@ -116,6 +181,7 @@ export interface Refund {
   id: UUID
   payment_id: UUID
   merchant_id: UUID
+  /** Amount returned, in stroops. Format with `formatStroops` — see lib/money.ts. */
   amount_stroops: bigint
   asset: string
   status: RefundStatus
@@ -129,6 +195,7 @@ export type WithdrawalStatus = 'pending' | 'processing' | 'completed' | 'failed'
 export interface Withdrawal {
   id: UUID
   merchant_id: UUID
+  /** Amount cashed out, in stroops. Format with `formatStroops` — see lib/money.ts. */
   amount_stroops: bigint
   asset: string
   status: WithdrawalStatus
@@ -142,8 +209,11 @@ export interface Withdrawal {
 }
 
 export interface FeeEstimate {
+  /** Platform fee, in stroops. Format with `formatStroops` — see lib/money.ts. */
   fee_stroops: bigint
+  /** Stellar network resource fee, in stroops (usually 0.00001 XLM). */
   network_fee_stroops: bigint
+  /** `fee_stroops + network_fee_stroops`, in stroops. */
   total_stroops: bigint
 }
 
@@ -151,6 +221,7 @@ export interface Remittance {
   id: UUID
   merchant_id: UUID
   destination_address: string
+  /** Amount sent, in stroops. Format with `formatStroops` — see lib/money.ts. */
   amount_stroops: bigint
   asset: string
   memo: string | null
@@ -161,8 +232,165 @@ export interface Remittance {
   updated_at: string
 }
 
+export interface ApiKey {
+  id: UUID
+  merchant_id: UUID
+  name: string
+  key_preview: string // e.g. "ak_live_••••••••••••••••"
+  created_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+/** Platform-wide, not merchant-scoped — every `admin/*` call requires `Me.is_admin`. */
+export interface AssetTotal {
+  asset: string
+  /** Summed across every merchant, in stroops. Format with `formatStroops`. */
+  available: bigint
+  /** Summed across every merchant, in stroops. Format with `formatStroops`. */
+  pending: bigint
+}
+
+export interface StatusCount {
+  status: string
+  count: number
+}
+
+export interface AdminOverview {
+  total_users: number
+  total_merchants: number
+  total_wallets: number
+  balances_by_asset: AssetTotal[]
+  payments_by_status: StatusCount[]
+  withdrawals_by_status: StatusCount[]
+  payment_requests_by_status: StatusCount[]
+}
+
+export interface AdminUserRow {
+  id: UUID
+  email: string
+  name: string
+  is_admin: boolean
+  created_at: string
+  merchant_id: UUID | null
+  merchant_name: string | null
+}
+
+export interface AdminMerchantRow {
+  id: UUID
+  name: string
+  owner_user_id: UUID
+  owner_email: string
+  created_at: string
+  wallet_address: string | null
+}
+
+export interface AdminWalletRow {
+  id: UUID
+  merchant_id: UUID
+  merchant_name: string
+  address: string
+  network: string
+  created_at: string
+}
+
+export interface AdminTransactionRow {
+  id: UUID
+  merchant_id: UUID
+  merchant_name: string
+  wallet_address: string
+  tx_hash: string
+  /** Amount received, in stroops. Format with `formatStroops` — see lib/money.ts. */
+  amount_stroops: bigint
+  asset: string
+  network: string
+  status: PaymentStatus
+  confirmations: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminWithdrawalRow {
+  id: UUID
+  merchant_id: UUID
+  merchant_name: string
+  /** Amount cashed out, in stroops. Format with `formatStroops` — see lib/money.ts. */
+  amount_stroops: bigint
+  asset: string
+  status: WithdrawalStatus
+  provider: string | null
+  provider_reference: string | null
+  bank_code: string | null
+  account_number: string | null
+  failure_reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AdminPaymentRequestRow {
+  id: UUID
+  merchant_id: UUID
+  merchant_name: string
+  /** Amount asked for, in stroops. Format with `formatStroops` — see lib/money.ts. */
+  amount_stroops: bigint
+  asset: string
+  memo: string
+  status: PaymentRequestStatus
+  payment_id: UUID | null
+  expires_at: string
+  created_at: string
+  updated_at: string
+}
+
+export interface UpdateProfileRequest {
+  name?: string
+  merchant_name?: string
+}
+
+export interface UpdateProfileResponse {
+  user_id: UUID
+  email: string
+  name: string
+  merchant_id: UUID | null
+  merchant_name: string | null
+}
+
+export interface ChangeEmailRequest {
+  new_email: string
+}
+
+export interface ChangeEmailResponse {
+  message: string
+}
+
+export interface DeleteAccountResponse {
+  message: string
+}
+
+export interface PushSubscriptionRequest {
+  endpoint: string
+  p256dh: string
+  auth: string
+}
+
+export interface PushSubscriptionResponse {
+  id: UUID
+  merchant_id: UUID
+  endpoint: string
+  created_at: string
+}
+
+export interface PushSubscriptionStatus {
+  enabled: boolean
+}
+
+/**
+ * Re-quotes large integer values before JSON.parse can round them, then revives
+ * registered fields as bigint. When adding a key to BIGINT_KEYS, also add it
+ * to the field-name alternatives in this regex; see lib/__tests__/api.test.ts.
+ */
 export function parseWithBigInts<T>(text: string): T {
-  const quoted = text.replace(/"(amount_stroops|available|pending)"\s*:\s*(-?\d+)/g, '"$1":"$2"')
+  const quoted = text.replace(/"(amount_stroops|available|pending|fee_stroops|network_fee_stroops|total_stroops)"\s*:\s*(-?\d+)/g, '"$1":"$2"')
   return JSON.parse(quoted, (key, value) =>
     BIGINT_KEYS.has(key) && typeof value === 'string' ? BigInt(value) : value
   ) as T
@@ -181,7 +409,7 @@ export function stringifyWithBigInts(value: unknown): string {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST'
+  method?: 'GET' | 'POST' | 'DELETE'
   body?: unknown
   token?: string
   signal?: AbortSignal
@@ -191,21 +419,36 @@ interface RequestOptions {
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, token, signal } = options
 
+  // Only state-changing verbs carry the token. Sending it on GET as well
+  // would just widen the surface for leaking it through logs and referrers.
+  const csrfToken = isMutatingMethod(method) ? getCsrfToken() : null
+
   let response: Response
   try {
     response = await fetch(`${BASE_URL}${path}`, {
       method,
       signal,
+      // Same-origin, and the session cookie is `SameSite=Strict` — an explicit
+      // `same-origin` keeps that promise if the cookie's attributes ever
+      // regress, and keeps us from ever attaching anything cross-origin.
+      credentials: 'same-origin',
       headers: {
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(csrfToken ? { [CSRF_HEADER_NAME]: csrfToken } : {}),
       },
       body: body === undefined ? undefined : stringifyWithBigInts(body),
     })
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') throw cause
-    // Also what a CORS rejection looks like from the browser's side.
-    throw new ApiError(`Can't reach the payment server at ${BASE_URL}.`, 0)
+    // Also what a CORS rejection looks like from the browser's side. Every
+    // page that doesn't special-case `status === 0` falls back to showing
+    // this message as-is, so it stays generic — no backend URL, nothing
+    // that reads like a stack trace.
+    throw new ApiError(
+      "We can't reach the server right now. Check your connection and try again.",
+      0
+    )
   }
 
   const text = await response.text()
@@ -216,24 +459,44 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     if (response.status === 401 && token) onUnauthorized?.()
 
     let message = `Request failed (${response.status})`
+    let code: string | undefined
+    let field: string | undefined
     try {
-      const parsed = JSON.parse(text) as { error?: string }
+      const parsed = JSON.parse(text) as { error?: string; code?: string; field?: string }
       if (parsed.error) message = parsed.error
+      code = parsed.code
+      field = parsed.field
     } catch {
       // Non-JSON body (proxy error page, panic); keep the status-code message.
     }
-    throw new ApiError(message, response.status)
+    throw new ApiError(message, response.status, code, field)
   }
 
   return text ? parseWithBigInts<T>(text) : (undefined as T)
 }
 
 export const api = {
-  signup: (email: string, password: string, name: string) =>
-    request<AuthResponse>('/signup', { method: 'POST', body: { email, password, name } }),
+  /** Never returns a session directly — always a challenge. The account is
+   * only created once `verifyOtp` succeeds. */
+  signup: (email: string, password: string, name: string, phoneNumber: string) =>
+    request<OtpChallengeResponse>('/signup', {
+      method: 'POST',
+      body: { email, password, name, phone_number: phoneNumber },
+    }),
 
+  /** A challenge for any phone-verified account, or a session directly for
+   * a legacy no-phone account — see `LoginResult`. */
   login: (email: string, password: string) =>
-    request<AuthResponse>('/login', { method: 'POST', body: { email, password } }),
+    request<LoginResult>('/login', { method: 'POST', body: { email, password } }),
+
+  /** The only call that ever turns a challenge into a session. */
+  verifyOtp: (challengeId: string, code: string) =>
+    request<AuthResponse>('/verify-otp', {
+      method: 'POST',
+      body: { challenge_id: challengeId, code },
+    }),
+
+  logout: (token?: string) => request<void>('/logout', { method: 'POST', token }),
 
   /** The JWT carries only ids; this is how anything human-readable is rendered. */
   getMe: (token: string, signal?: AbortSignal) => request<Me>('/me', { token, signal }),
@@ -251,6 +514,7 @@ export const api = {
 
   createPaymentRequest: (
     token: string,
+    /** Amount to charge, in stroops. Build with `parseAmountToStroops` — see lib/money.ts. */
     amountStroops: bigint,
     asset?: string,
     expiresInSecs?: number,
@@ -277,6 +541,7 @@ export const api = {
   createRefund: (
     token: string,
     paymentId: string,
+    /** Amount to refund, in stroops. Build with `parseAmountToStroops` — see lib/money.ts. */
     amountStroops: bigint,
     recipientAddress: string,
     reason?: string
@@ -296,6 +561,7 @@ export const api = {
 
   createWithdrawal: (
     token: string,
+    /** Amount to cash out, in stroops. Build with `parseAmountToStroops` — see lib/money.ts. */
     amountStroops: bigint,
     bankCode: string,
     accountNumber: string,
@@ -315,20 +581,81 @@ export const api = {
   listWithdrawals: (token: string, limit = 50, signal?: AbortSignal) =>
     request<Withdrawal[]>(`/withdrawals?limit=${limit}`, { token, signal }),
 
-  closeMerchantAccount: (token: string, destinationAddress: string) =>
-    request<{ success: boolean }>('/merchant/close', {
+  listApiKeys: (token: string, signal?: AbortSignal) =>
+    request<ApiKey[]>('/api-keys', { token, signal }),
+
+  createApiKey: (token: string, name: string) =>
+    request<{ api_key: ApiKey; full_key: string }>('/api-keys', {
       method: 'POST',
       token,
-      body: { destination_address: destinationAddress },
+      body: { name },
     }),
 
-  // ZAR onramp via Ozow
-  createOzowPayment: (
+  revokeApiKey: (token: string, id: UUID) =>
+    request<void>(`/api-keys/${id}`, { method: 'DELETE', token }),
+
+  updateProfile: (token: string, body: UpdateProfileRequest) =>
+    request<UpdateProfileResponse>('/me', { method: 'POST', token, body }),
+
+  changeEmail: (token: string, newEmail: string) =>
+    request<ChangeEmailResponse>('/me/email', {
+      method: 'POST',
+      token,
+      body: { new_email: newEmail },
+    }),
+
+  deleteAccount: (token: string) =>
+    request<DeleteAccountResponse>('/me', { method: 'DELETE', token }),
+
+  registerPushSubscription: (token: string, subscription: PushSubscriptionRequest) =>
+    request<PushSubscriptionResponse>('/push/subscribe', {
+      method: 'POST',
+      token,
+      body: subscription,
+    }),
+
+  unregisterPushSubscription: (token: string) =>
+    request<void>('/push/unsubscribe', { method: 'DELETE', token }),
+
+  getPushSubscriptionStatus: (token: string, signal?: AbortSignal) =>
+    request<PushSubscriptionStatus>('/push/status', { token, signal }),
+
+  getRemittanceFeeEstimate: (
     token: string,
-    amountZAR: number,
-    bankCode: string,
-    returnUrl: string
+    /** Amount being quoted for, in stroops. Build with `parseAmountToStroops`. */
+    amountStroops: bigint,
+    asset = 'XLM',
+    signal?: AbortSignal
   ) =>
+    request<FeeEstimate>(`/remittance/estimate?amount_stroops=${amountStroops}&asset=${asset}`, {
+      token,
+      signal,
+    }),
+
+  createRemittance: (
+    token: string,
+    destinationAddress: string,
+    /** Amount to send, in stroops. Build with `parseAmountToStroops` — see lib/money.ts. */
+    amountStroops: bigint,
+    asset = 'XLM',
+    memo?: string
+  ) =>
+    request<Remittance>('/remittance', {
+      method: 'POST',
+      token,
+      body: {
+        destination_address: destinationAddress,
+        amount_stroops: amountStroops,
+        asset,
+        ...(memo ? { memo } : {}),
+      },
+    }),
+
+  listRemittances: (token: string, limit = 50, signal?: AbortSignal) =>
+    request<Remittance[]>(`/remittances?limit=${limit}`, { token, signal }),
+
+  // ZAR onramp via Ozow
+  createOzowPayment: (token: string, amountZAR: number, bankCode: string, returnUrl: string) =>
     request<{ payment_url: string; transaction_id: string }>('/onramp/ozow/initiate', {
       method: 'POST',
       token,
@@ -343,5 +670,44 @@ export const api = {
     request<{ status: 'pending' | 'completed' | 'failed'; tx_hash?: string }>(
       `/onramp/ozow/verify/${transactionId}`,
       { token }
+    ),
+
+  adminOverview: (token: string, signal?: AbortSignal) =>
+    request<AdminOverview>('/admin/overview', { token, signal }),
+
+  adminUsers: (token: string, page = 1, pageSize = 25, signal?: AbortSignal) =>
+    request<AdminUserRow[]>(`/admin/users?page=${page}&page_size=${pageSize}`, { token, signal }),
+
+  adminMerchants: (token: string, page = 1, pageSize = 25, signal?: AbortSignal) =>
+    request<AdminMerchantRow[]>(`/admin/merchants?page=${page}&page_size=${pageSize}`, {
+      token,
+      signal,
+    }),
+
+  adminWallets: (token: string, page = 1, pageSize = 25, signal?: AbortSignal) =>
+    request<AdminWalletRow[]>(`/admin/wallets?page=${page}&page_size=${pageSize}`, {
+      token,
+      signal,
+    }),
+
+  adminTransactions: (token: string, page = 1, pageSize = 25, signal?: AbortSignal) =>
+    request<AdminTransactionRow[]>(`/admin/transactions?page=${page}&page_size=${pageSize}`, {
+      token,
+      signal,
+    }),
+
+  adminWithdrawals: (token: string, page = 1, pageSize = 25, signal?: AbortSignal) =>
+    request<AdminWithdrawalRow[]>(`/admin/withdrawals?page=${page}&page_size=${pageSize}`, {
+      token,
+      signal,
+    }),
+
+  adminPaymentRequests: (token: string, page = 1, pageSize = 25, signal?: AbortSignal) =>
+    request<AdminPaymentRequestRow[]>(
+      `/admin/payment-requests?page=${page}&page_size=${pageSize}`,
+      {
+        token,
+        signal,
+      }
     ),
 }

@@ -1,4 +1,10 @@
-import { formatStroops, isWholeKobo, parseAmountToStroops, STROOPS_PER_UNIT } from '@/lib/money'
+import {
+  formatStroops,
+  isAmountMultipleOf,
+  isWholeKobo,
+  parseAmountToStroops,
+  STROOPS_PER_UNIT,
+} from '@/lib/money'
 
 describe('formatStroops', () => {
   it('formats a whole unit with no fraction', () => {
@@ -41,10 +47,12 @@ describe('parseAmountToStroops', () => {
     expect(parseAmountToStroops('.')).toBeNull()
   })
 
-  it('round-trips through formatStroops', () => {
-    const stroops = parseAmountToStroops('123.4567')
-    expect(stroops).not.toBeNull()
-    expect(formatStroops(stroops!)).toBe('123.4567')
+  it('round-trips several stroop amounts through formatStroops', () => {
+    const amounts = [0n, 1n, 10_000_000n, 12_345_678n, 99_999_999n]
+
+    for (const amount of amounts) {
+      expect(parseAmountToStroops(formatStroops(amount))).toBe(amount)
+    }
   })
 })
 
@@ -55,5 +63,19 @@ describe('isWholeKobo', () => {
 
   it('rejects an amount smaller than one kobo', () => {
     expect(isWholeKobo(1n)).toBe(false)
+  })
+})
+
+describe('isAmountMultipleOf', () => {
+  it('accepts amounts aligned to the configured precision', () => {
+    expect(isAmountMultipleOf(200_000n, 100_000n)).toBe(true)
+  })
+
+  it('rejects amounts smaller than the configured precision', () => {
+    expect(isAmountMultipleOf(1n, 100_000n)).toBe(false)
+  })
+
+  it('rejects a non-positive precision', () => {
+    expect(isAmountMultipleOf(1n, 0n)).toBe(false)
   })
 })
