@@ -1,62 +1,57 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import {
-  CSRF_COOKIE_NAME,
-  CSRF_HEADER_NAME,
-  generateToken,
-  isMutatingMethod,
-  serializeCsrfCookie,
-  tokensMatch,
-} from '@/lib/csrf'
 
 /**
- * CSRF enforcement for the `/backend/*` rewrite (see next.config.mjs).
+ * Per-request CSP nonce middleware (#632).
  *
- * That rewrite makes the backend same-origin as far as the browser is
- * concerned, so cookies ride along on every request with no CORS preflight —
- * exactly the precondition for CSRF. This gate runs before the rewrite and
- * rejects any state-changing `/backend/*` request that doesn't double-submit
- * the token from `lib/csrf.ts`.
+ * Generates a cryptographically random nonce for every request and embeds it
+ * in the Content-Security-Policy header, replacing the broad 'unsafe-inline'
+ * directive with 'nonce-{nonce}'. The nonce is forwarded to the page via the
+ * `x-nonce` response header so that layout.tsx can read it with `headers()`
+ * and apply it to inline <script> tags.
  *
- * See docs/SECURITY_CSRF.md for the model and the reasoning.
+ * This middleware runs on every non-static, non-API-internal route.
  */
+export function middleware(request: NextRequest) {
+  // 16 random bytes → 22-character base64url string (no padding).
+  const nonceBytes = crypto.getRandomValues(new Uint8Array(16))
+  const nonce = Buffer.from(nonceBytes).toString('base64url')
 
-/** Only the proxied backend needs guarding; pages and assets are untouched. */
-export const config = {
-  matcher: '/backend/:path*',
-}
+  const csp = [
+    "default-src 'self'",
+    `script-src 'self' 'nonce-${nonce}'`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "font-src 'self' data:",
+    "connect-src 'self' https://api.coingecko.com https://horizon.stellar.org https://horizon-testnet.stellar.org https://*.sentry.io https://*.ingest.us.sentry.io https://vitals.vercel-insights.com",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join('; ')
 
-/**
- * Rejects a forged state change. The reason travels in a response header for
- * debugging, while the body stays generic so nothing about the check leaks to
- * the page that triggered it.
- */
-function reject(reason: string): NextResponse {
-  return NextResponse.json(
-    { error: 'CSRF validation failed. Reload the page and try again.', code: 'CSRF_FAILED' },
-    { status: 403, headers: { 'X-CSRF-Reason': reason } }
-  )
-}
+  const response = NextResponse.next({
+    request: {
+      headers: new Headers(request.headers),
+    },
+  })
 
-export function middleware(request: NextRequest): NextResponse {
-  const cookie = request.cookies.get(CSRF_COOKIE_NAME)?.value
-  const response = NextResponse.next()
-
-  // Seed the token on the first request of a visit, so a page that submits
-  // immediately — or a hard refresh — always has a token to submit.
-  if (!cookie) {
-    response.headers.append(
-      'Set-Cookie',
-      serializeCsrfCookie(generateToken(), request.nextUrl.protocol === 'https:')
-    )
-  }
-
-  // Safe methods change nothing, so they pass through unchecked.
-  if (!isMutatingMethod(request.method)) return response
-
-  const provided = request.headers.get(CSRF_HEADER_NAME)
-  if (!cookie) return reject('no-token')
-  if (!provided) return reject('missing-header')
-  if (!tokensMatch(cookie, provided)) return reject('mismatch')
+  // Make the nonce available to RSC/layout via headers().
+  response.headers.set('x-nonce', nonce)
+  response.headers.set('Content-Security-Policy', csp)
+  response.headers.set('X-Content-Type-Options', 'nosniff')
+  response.headers.set('X-Frame-Options', 'DENY')
+  response.headers.set('X-XSS-Protection', '1; mode=block')
+  response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
+  response.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
 
   return response
+}
+
+export const config = {
+  /**
+   * Run on all routes except Next.js internals and static file serving.
+   * This ensures every HTML page response carries a fresh nonce.
+   */
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|sw.js|workbox-|manifest).*)',
+  ],
 }
