@@ -5,9 +5,9 @@ import { usePathname } from 'next/navigation'
 import { motion } from 'framer-motion'
 import { Menu, ArrowRight, LayoutDashboard, ArrowDownUp, Wallet, Receipt } from 'lucide-react'
 import Link from 'next/link'
-import { Drawer } from 'vaul'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { ConnectButton } from '@/components/Wallet'
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -81,19 +81,21 @@ export function Navbar() {
             <ConnectButton />
 
             {/* Hamburger — mobile only */}
-            <Drawer.Root open={drawerOpen} onOpenChange={setDrawerOpen} direction="left">
-              <Drawer.Trigger asChild>
+            <Dialog open={drawerOpen} onOpenChange={setDrawerOpen}>
+              <DialogTrigger asChild>
                 <button
                   className="p-2 md:hidden text-muted-foreground hover:text-foreground"
                   aria-label="Open menu"
                 >
                   <Menu size={20} />
                 </button>
-              </Drawer.Trigger>
+              </DialogTrigger>
 
-              <Drawer.Portal>
-                <Drawer.Overlay className="fixed inset-0 z-50 bg-black/40" />
-                <Drawer.Content className="fixed left-0 top-0 bottom-0 z-50 flex w-72 flex-col bg-card border-r border-border outline-none">
+              <DialogContent
+                overlayClassName="bg-black/40"
+                className="inset-y-0 left-0 right-auto top-0 flex w-72 max-w-[calc(100vw-3rem)] translate-x-0 translate-y-0 flex-col rounded-none border-y-0 border-l-0 border-r border-border bg-card p-0 outline-none"
+              >
+                <DialogTitle className="sr-only">Navigation menu</DialogTitle>
                   {/* Drag handle */}
                   <div className="mx-auto mt-3 h-1.5 w-10 rounded-full bg-muted" />
 
@@ -142,9 +144,8 @@ export function Navbar() {
                   <div className="p-6 border-t border-border" onClick={() => setDrawerOpen(false)}>
                     <ConnectButton className="w-full" />
                   </div>
-                </Drawer.Content>
-              </Drawer.Portal>
-            </Drawer.Root>
+              </DialogContent>
+            </Dialog>
           </div>
         </nav>
       </motion.header>
