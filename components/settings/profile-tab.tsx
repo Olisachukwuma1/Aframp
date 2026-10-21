@@ -72,7 +72,7 @@ export function ProfileTab() {
             <div className="relative group">
               <Avatar className="h-20 w-20 ring-2 ring-primary/20 ring-offset-2 ring-offset-background">
                 <AvatarImage src={profile.avatarUrl} alt={profile.displayName} />
-                <AvatarFallback className="text-xl bg-primary/10 text-primary font-semibold">
+                <AvatarFallback className="text-xl bg-primary/10 text-foreground font-semibold">
                   {initials}
                 </AvatarFallback>
               </Avatar>
