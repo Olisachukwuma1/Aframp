@@ -1,14 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import {
-  ArrowLeft,
-  Copy,
-  Check,
-  Camera,
-  AlertCircle,
-} from 'lucide-react'
+import { ArrowLeft, Copy, Check, Camera, AlertCircle } from 'lucide-react'
 import QRCode from 'react-qr-code'
 import { Button } from '@/components/ui/button'
 import { QRScanner } from '@/components/send/qr-scanner'
@@ -17,6 +11,8 @@ import { cn } from '@/lib/utils'
 interface RequestPageClientProps {
   requestId: string
 }
+
+type CopyTarget = 'wallet' | 'paymentLink' | 'sep7'
 
 // Mock payment request data — in production, fetch from API
 const MOCK_REQUEST = {
@@ -34,22 +30,30 @@ const MOCK_REQUEST = {
 export function RequestPageClient({ requestId }: RequestPageClientProps) {
   const router = useRouter()
   const [scannerOpen, setScannerOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<CopyTarget | null>(null)
   const [isMobile, setIsMobile] = useState(false)
   const [scannedAddress, setScannedAddress] = useState<string | null>(null)
+  const copyFeedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Detect mobile viewport
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768)
     checkMobile()
     window.addEventListener('resize', checkMobile)
-    return () => window.removeEventListener('resize', checkMobile)
+    return () => {
+      window.removeEventListener('resize', checkMobile)
+      if (copyFeedbackTimer.current) clearTimeout(copyFeedbackTimer.current)
+    }
   }, [])
 
-  const handleCopyWallet = async () => {
-    await navigator.clipboard.writeText(MOCK_REQUEST.requesterWallet)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const handleCopy = async (target: CopyTarget, value: string) => {
+    await navigator.clipboard.writeText(value)
+    setCopied(target)
+    if (copyFeedbackTimer.current) clearTimeout(copyFeedbackTimer.current)
+    copyFeedbackTimer.current = setTimeout(() => {
+      setCopied((current) => (current === target ? null : current))
+      copyFeedbackTimer.current = null
+    }, 2000)
   }
 
   const handleScanPayment = (address: string) => {
@@ -82,12 +86,8 @@ export function RequestPageClient({ requestId }: RequestPageClientProps) {
               Amount requested
             </p>
             <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-foreground">
-                {MOCK_REQUEST.amount}
-              </span>
-              <span className="text-lg text-muted-foreground">
-                {MOCK_REQUEST.currency}
-              </span>
+              <span className="text-3xl font-bold text-foreground">{MOCK_REQUEST.amount}</span>
+              <span className="text-lg text-muted-foreground">{MOCK_REQUEST.currency}</span>
             </div>
             <p className="text-xs text-muted-foreground mt-2">
               on Stellar network via {MOCK_REQUEST.asset}
@@ -100,27 +100,21 @@ export function RequestPageClient({ requestId }: RequestPageClientProps) {
               <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">
                 Requested by
               </p>
-              <p className="text-sm font-semibold text-foreground">
-                {MOCK_REQUEST.requesterName}
-              </p>
+              <p className="text-sm font-semibold text-foreground">{MOCK_REQUEST.requesterName}</p>
             </div>
             {MOCK_REQUEST.description && (
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">
                   Description
                 </p>
-                <p className="text-sm text-foreground">
-                  {MOCK_REQUEST.description}
-                </p>
+                <p className="text-sm text-foreground">{MOCK_REQUEST.description}</p>
               </div>
             )}
             <div>
               <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium mb-1">
                 Expires
               </p>
-              <p className="text-sm text-foreground">
-                {MOCK_REQUEST.expiresAt.toLocaleString()}
-              </p>
+              <p className="text-sm text-foreground">{MOCK_REQUEST.expiresAt.toLocaleString()}</p>
             </div>
           </div>
 
@@ -138,6 +132,51 @@ export function RequestPageClient({ requestId }: RequestPageClientProps) {
             <p className="text-xs text-muted-foreground text-center">
               Scan with {MOCK_REQUEST.asset} wallet to pay this request
             </p>
+            <div className="flex w-full flex-col gap-2">
+              <Button
+                onClick={() => void handleCopy('paymentLink', window.location.href)}
+                variant="outline"
+                size="sm"
+                className={cn(
+                  'h-9 w-full gap-2 transition-all',
+                  copied === 'paymentLink' &&
+                    'border-emerald-500/40 text-emerald-600 bg-emerald-500/5'
+                )}
+              >
+                {copied === 'paymentLink' ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy payment link
+                  </>
+                )}
+              </Button>
+              <Button
+                onClick={() => void handleCopy('sep7', qrValue)}
+                variant="outline"
+                size="sm"
+                className={cn(
+                  'h-9 w-full gap-2 transition-all',
+                  copied === 'sep7' && 'border-emerald-500/40 text-emerald-600 bg-emerald-500/5'
+                )}
+              >
+                {copied === 'sep7' ? (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy SEP-7 URI
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
 
           {/* ── Wallet address ── */}
@@ -152,15 +191,15 @@ export function RequestPageClient({ requestId }: RequestPageClientProps) {
             </div>
             <div className="px-4 pb-4 flex gap-2 mt-2">
               <Button
-                onClick={handleCopyWallet}
+                onClick={() => void handleCopy('wallet', MOCK_REQUEST.requesterWallet)}
                 variant="outline"
                 size="sm"
                 className={cn(
                   'flex-1 h-9 gap-2 transition-all',
-                  copied && 'border-emerald-500/40 text-emerald-600 bg-emerald-500/5'
+                  copied === 'wallet' && 'border-primary/40 text-primary bg-primary/5'
                 )}
               >
-                {copied ? (
+                {copied === 'wallet' ? (
                   <>
                     <Check className="w-3.5 h-3.5" />
                     Copied!
@@ -179,7 +218,7 @@ export function RequestPageClient({ requestId }: RequestPageClientProps) {
           {isMobile && (
             <Button
               onClick={() => setScannerOpen(true)}
-              className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold rounded-xl flex gap-2"
+              className="bg-primary text-primary-foreground hover:bg-primary/90 flex w-full gap-2 rounded-xl font-semibold"
             >
               <Camera className="w-5 h-5" />
               Pay with camera
@@ -188,11 +227,11 @@ export function RequestPageClient({ requestId }: RequestPageClientProps) {
 
           {/* ── Scanned address confirmation ── */}
           {scannedAddress && (
-            <div className="rounded-2xl border border-emerald-500/40 bg-emerald-500/5 p-4 flex gap-3">
-              <AlertCircle className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+            <div className="border-primary/40 bg-primary/5 flex gap-3 rounded-2xl border p-4">
+              <AlertCircle className="text-primary mt-0.5 size-5 shrink-0" />
               <div>
-                <p className="text-sm font-semibold text-emerald-700">Payment detected</p>
-                <p className="text-xs text-emerald-600 mt-1">
+                <p className="text-primary text-sm font-semibold">Payment detected</p>
+                <p className="text-primary mt-1 text-xs">
                   From: {scannedAddress.slice(0, 10)}...{scannedAddress.slice(-10)}
                 </p>
               </div>
@@ -203,10 +242,7 @@ export function RequestPageClient({ requestId }: RequestPageClientProps) {
 
       {/* ── QR Scanner Modal ── */}
       {scannerOpen && (
-        <QRScanner
-          onScan={handleScanPayment}
-          onClose={() => setScannerOpen(false)}
-        />
+        <QRScanner onScan={handleScanPayment} onClose={() => setScannerOpen(false)} />
       )}
     </div>
   )

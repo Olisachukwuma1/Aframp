@@ -1,12 +1,14 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
 import { ErrorState } from '@/components/ui/error-state'
 import { EmptyStateIllustration } from '@/components/ui/empty-state-illustration'
 import { api, ApiError, type Balance, type Payment, type PaymentStatus, type Refund } from '@/lib/api'
+import { exportPaymentsToCSV } from '@/lib/export'
 import { formatStroops } from '@/lib/money'
 import { useAuthenticatedSession } from '@/components/session-provider'
 
@@ -33,6 +35,18 @@ function formatWhen(iso: string): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function downloadPaymentsCsv(payments: Payment[]): void {
+  const blob = new Blob([exportPaymentsToCSV(payments)], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `aframp-transactions-${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 export default function TransactionsPage() {
@@ -121,7 +135,19 @@ export default function TransactionsPage() {
   return (
     <div>
       <header className="space-y-3">
-        <h1 className="text-2xl font-bold tracking-tight">Payments</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="text-2xl font-bold tracking-tight">Payments</h1>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={payments.length === 0}
+            onClick={() => downloadPaymentsCsv(payments)}
+          >
+            <Download className="mr-2 size-4" aria-hidden="true" />
+            Export CSV
+          </Button>
+        </div>
         {balances.length > 0 && (
           <ul className="grid gap-2 sm:grid-cols-2">
             {balances.map((balance) => (

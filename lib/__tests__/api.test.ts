@@ -6,14 +6,21 @@ import {
   setUnauthorizedHandler,
   stringifyWithBigInts,
 } from '@/lib/api'
+import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME, clearCsrfToken, writeCsrfToken } from '@/lib/csrf'
 
 const fetchMock = jest.fn()
 const originalFetch = globalThis.fetch
+
+/** The `X-CSRF-Token` header of a captured fetch call. */
+function csrfHeader(index = 0): string | undefined {
+  return fetchMock.mock.calls[index][1].headers[CSRF_HEADER_NAME]
+}
 
 beforeEach(() => {
   fetchMock.mockReset()
   globalThis.fetch = fetchMock as unknown as typeof fetch
   setUnauthorizedHandler(null)
+  clearCsrfToken()
 })
 
 afterEach(() => {
@@ -45,8 +52,20 @@ describe('parseWithBigInts', () => {
       amount_stroops: bigint
       available: bigint
       pending: bigint
-    }>('{"amount_stroops":1,"available":2,"pending":3}')
-    expect(parsed).toEqual({ amount_stroops: 1n, available: 2n, pending: 3n })
+      fee_stroops: bigint
+      network_fee_stroops: bigint
+      total_stroops: bigint
+    }>(
+      '{"amount_stroops":1,"available":2,"pending":3,"fee_stroops":9007199254740993,"network_fee_stroops":5,"total_stroops":6}'
+    )
+    expect(parsed).toEqual({
+      amount_stroops: 1n,
+      available: 2n,
+      pending: 3n,
+      fee_stroops: 9007199254740993n,
+      network_fee_stroops: 5n,
+      total_stroops: 6n,
+    })
   })
 
   it('leaves non-bigint keys and string values untouched', () => {
@@ -105,10 +124,10 @@ describe('request', () => {
     fetchMock.mockResolvedValue(new Response('', { status: 200 }))
     await request('/withdraw', { method: 'POST', body: { amount_stroops: 9007199254740993n } })
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('http://127.0.0.1:3000/withdraw')
+    expect(url).toBe('/backend/withdraw')
     expect(init.method).toBe('POST')
     expect(init.body).toBe('{"amount_stroops":9007199254740993}')
-    expect(init.headers).toEqual({ 'Content-Type': 'application/json' })
+    expect(init.headers['Content-Type']).toBe('application/json')
   })
 
   it('attaches Authorization only when a token is present', async () => {
@@ -154,7 +173,7 @@ describe('request', () => {
   it('throws ApiError(status 0) on network failure', async () => {
     fetchMock.mockRejectedValue(new TypeError('fetch failed'))
     await expect(request('/balance')).rejects.toMatchObject({
-      message: "Can't reach the payment server at http://127.0.0.1:3000.",
+      message: "We can't reach the server right now. Check your connection and try again.",
       status: 0,
     })
   })
@@ -169,20 +188,41 @@ describe('request', () => {
 })
 
 describe('api', () => {
-  it('signup posts credentials', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ token: 't', user_id: 'u', merchant_id: null }))
-    await api.signup('a@b.c', 'pw', 'Name')
+  it('signup posts credentials and a phone number, and never gets a session back', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ challenge_id: 'chal-1', expires_in_secs: 600 }))
+    const result = await api.signup('a@b.c', 'pw', 'Name', '08011122233')
     const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('http://127.0.0.1:3000/signup')
+    expect(url).toBe('/backend/signup')
     expect(init.method).toBe('POST')
-    expect(init.body).toBe('{"email":"a@b.c","password":"pw","name":"Name"}')
+    expect(init.body).toBe(
+      '{"email":"a@b.c","password":"pw","name":"Name","phone_number":"08011122233"}'
+    )
+    expect(result).toEqual({ challenge_id: 'chal-1', expires_in_secs: 600 })
   })
 
   it('login posts credentials', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ token: 't', user_id: 'u', merchant_id: null }))
     await api.login('a@b.c', 'pw')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/login')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/login')
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+  })
+
+  it('verifyOtp posts the challenge id and code, not an email', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ token: 't', user_id: 'u', merchant_id: 'm' }))
+    await api.verifyOtp('chal-1', '482913')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/verify-otp')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"challenge_id":"chal-1","code":"482913"}')
+  })
+
+  it('logout posts to /logout with the token', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+    await api.logout('tok')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/logout')
+    expect(init.method).toBe('POST')
+    expect(init.headers.Authorization).toBe('Bearer tok')
   })
 
   it('getMe GETs /me with a token', async () => {
@@ -197,14 +237,14 @@ describe('api', () => {
       })
     )
     await api.getMe('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/me')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/me')
     expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer tok' })
   })
 
   it('createWallet posts an empty body', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}))
     await api.createWallet('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/wallet/create')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/wallet/create')
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
     expect(fetchMock.mock.calls[0][1].body).toBe('{}')
   })
@@ -212,25 +252,25 @@ describe('api', () => {
   it('getWallet GETs /wallet', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}))
     await api.getWallet('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/wallet')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/wallet')
   })
 
   it('getBalances GETs /balance', async () => {
     fetchMock.mockResolvedValue(jsonResponse([]))
     await api.getBalances('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/balance')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/balance')
   })
 
   it('listTransactions builds the limit query', async () => {
     fetchMock.mockResolvedValue(jsonResponse([]))
     await api.listTransactions('tok', 20)
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/transactions?limit=20')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/transactions?limit=20')
   })
 
   it('createPaymentRequest posts amount_stroops', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}))
     await api.createPaymentRequest('tok', 5n)
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/payment-requests')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/payment-requests')
     expect(fetchMock.mock.calls[0][1].body).toBe('{"amount_stroops":5}')
   })
 
@@ -245,13 +285,13 @@ describe('api', () => {
   it('listPaymentRequests builds the limit query', async () => {
     fetchMock.mockResolvedValue(jsonResponse([]))
     await api.listPaymentRequests('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/payment-requests?limit=50')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/payment-requests?limit=50')
   })
 
   it('getPaymentRequest fetches without a token', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}))
     await api.getPaymentRequest('abc')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/payment-requests/abc')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/payment-requests/abc')
     expect(fetchMock.mock.calls[0][1].headers).toEqual({})
   })
 
@@ -274,6 +314,258 @@ describe('api', () => {
   it('listWithdrawals builds the limit query', async () => {
     fetchMock.mockResolvedValue(jsonResponse([]))
     await api.listWithdrawals('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:3000/withdrawals?limit=50')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/withdrawals?limit=50')
+  })
+
+  it('admin list methods request a server-side page of 25 by default', async () => {
+    const calls = [
+      [api.adminUsers, '/backend/admin/users'],
+      [api.adminMerchants, '/backend/admin/merchants'],
+      [api.adminWallets, '/backend/admin/wallets'],
+      [api.adminTransactions, '/backend/admin/transactions'],
+      [api.adminWithdrawals, '/backend/admin/withdrawals'],
+      [api.adminPaymentRequests, '/backend/admin/payment-requests'],
+    ] as const
+
+    for (const [method, endpoint] of calls) {
+      fetchMock.mockResolvedValueOnce(jsonResponse([]))
+      await method('tok')
+      expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(`${endpoint}?page=1&page_size=25`)
+    }
+  })
+
+  it('admin list methods accept an explicit page and page size', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.adminUsers('tok', 3, 40)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/users?page=3&page_size=40')
+  })
+
+  it('getBalances GETs /balance', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.getBalances('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/balance')
+  })
+
+  it('listApiKeys GETs /api-keys', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.listApiKeys('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/api-keys')
+  })
+
+  it('createApiKey posts the key name', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createApiKey('tok', 'CI key')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/api-keys')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"name":"CI key"}')
+  })
+
+  it('updateProfile posts only the provided fields', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.updateProfile('tok', { name: 'New Name' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/me')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"name":"New Name"}')
+  })
+
+  it('changeEmail posts the new address', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.changeEmail('tok', 'new@example.com')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/me/email')
+    expect(fetchMock.mock.calls[0][1].body).toBe('{"new_email":"new@example.com"}')
+  })
+
+  it('createRefund posts the amount and recipient', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createRefund('tok', 'pay-1', 5n, 'GABC')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/payments/pay-1/refund')
+    expect(init.body).toBe('{"amount_stroops":5,"recipient":"GABC"}')
+  })
+
+  it('createRefund forwards an optional reason', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createRefund('tok', 'pay-1', 5n, 'GABC', 'duplicate')
+    expect(fetchMock.mock.calls[0][1].body).toBe(
+      '{"amount_stroops":5,"recipient":"GABC","reason":"duplicate"}'
+    )
+  })
+
+  it('listRefunds builds the limit query', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.listRefunds('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/refunds?limit=50')
+  })
+
+  it('listPaymentRequests builds the limit query', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.listPaymentRequests('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/payment-requests?limit=50')
+  })
+
+  it('getRemittanceFeeEstimate builds the estimate query', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.getRemittanceFeeEstimate('tok', 5n)
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/backend/remittance/estimate?amount_stroops=5&asset=XLM'
+    )
+  })
+
+  it('createRemittance posts the destination and amount', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createRemittance('tok', 'GABC', 5n)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/remittance')
+    expect(init.body).toBe('{"destination_address":"GABC","amount_stroops":5,"asset":"XLM"}')
+  })
+
+  it('createRemittance forwards an optional memo', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createRemittance('tok', 'GABC', 5n, 'XLM', 'invoice 1')
+    expect(fetchMock.mock.calls[0][1].body).toContain('"memo":"invoice 1"')
+  })
+
+  it('listRemittances builds the limit query', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.listRemittances('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/remittances?limit=50')
+  })
+
+  it('createOzowPayment posts the amount, bank and return URL', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createOzowPayment('tok', 250, 'FNB', 'https://app.aframp.com/charge')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/onramp/ozow/initiate')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(
+      '{"amount":250,"bank_code":"FNB","return_url":"https://app.aframp.com/charge"}'
+    )
+  })
+
+  it('verifyOzowPayment GETs the transaction status', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.verifyOzowPayment('tok', 'txn-1')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/onramp/ozow/verify/txn-1')
+  })
+
+  it('registerPushSubscription posts the subscription', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.registerPushSubscription('tok', {
+      endpoint: 'https://push.example/1',
+      p256dh: 'key',
+      auth: 'auth',
+    })
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/push/subscribe')
+  })
+
+  it('unregisterPushSubscription DELETEs the subscription', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.unregisterPushSubscription('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/push/unsubscribe')
+    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
+  })
+
+  it('getPushSubscriptionStatus GETs the status', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ enabled: true }))
+    await api.getPushSubscriptionStatus('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/push/status')
+  })
+
+  it.each([
+    ['adminOverview', '/backend/admin/overview'],
+    ['adminUsers', '/backend/admin/users?limit=100'],
+    ['adminMerchants', '/backend/admin/merchants?limit=100'],
+    ['adminWallets', '/backend/admin/wallets?limit=100'],
+    ['adminTransactions', '/backend/admin/transactions?limit=100'],
+    ['adminWithdrawals', '/backend/admin/withdrawals?limit=100'],
+    ['adminPaymentRequests', '/backend/admin/payment-requests?limit=100'],
+  ])('%s GETs %s', async (method, url) => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await (api[method as 'adminOverview'] as (token: string) => Promise<unknown>)('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe(url)
+  })
+})
+
+describe('CSRF token inclusion', () => {
+  it('sends a token on a POST', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await request('/withdraw', { method: 'POST', body: {} })
+    expect(csrfHeader()).toEqual(expect.any(String))
+  })
+
+  it('sends a token on a DELETE', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await request('/me', { method: 'DELETE' })
+    expect(csrfHeader()).toEqual(expect.any(String))
+  })
+
+  it('omits the token on a GET, so it never leaks into a referrer or a log', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await request('/balance')
+    expect(csrfHeader()).toBeUndefined()
+  })
+
+  it('echoes back exactly what the SameSite=Strict cookie holds', async () => {
+    writeCsrfToken('the-cookie-value')
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await request('/withdraw', { method: 'POST', body: {} })
+    // The two halves of the double submit have to agree, or middleware.ts
+    // answers 403 — this is the assertion that catches a divergence.
+    expect(csrfHeader()).toBe('the-cookie-value')
+  })
+
+  it('mints and persists a token when the cookie jar has none', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await request('/withdraw', { method: 'POST', body: {} })
+    const token = csrfHeader()
+    expect(token).toBeDefined()
+    expect(document.cookie).toContain(`${CSRF_COOKIE_NAME}=${token}`)
+  })
+
+  it('reuses the same token across consecutive mutations', async () => {
+    // A fresh Response per call — a body can only be read once.
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})))
+    await request('/withdraw', { method: 'POST', body: {} })
+    await request('/remittance', { method: 'POST', body: {} })
+    expect(csrfHeader(0)).toBe(csrfHeader(1))
+  })
+
+  it('stamps every mutating api call site, not just a representative one', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})))
+    await api.createPaymentRequest('tok', 5n)
+    await api.createWithdrawal('tok', 5n, '044', '0123456789')
+    await api.createOzowPayment('tok', 100, 'FNB', 'https://app.aframp.com/charge')
+    await api.revokeApiKey('tok', 'key-1')
+    await api.deleteAccount('tok')
+    await api.logout('tok')
+    for (const index of [0, 1, 2, 3, 4, 5]) {
+      expect(csrfHeader(index)).toEqual(expect.any(String))
+    }
+  })
+
+  it('does not stamp read-only calls', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse([])))
+    await api.listTransactions('tok')
+    await api.getMe('tok')
+    await api.listWithdrawals('tok')
+    for (const index of [0, 1, 2]) {
+      expect(csrfHeader(index)).toBeUndefined()
+    }
+  })
+
+  it('sends the request same-origin, so a cross-origin cookie is never attached', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await request('/withdraw', { method: 'POST', body: {} })
+    expect(fetchMock.mock.calls[0][1].credentials).toBe('same-origin')
+  })
+
+  it('surfaces a 403 from the CSRF gate as a normal ApiError', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'CSRF validation failed.' }, 403))
+    await expect(request('/withdraw', { method: 'POST', body: {} })).rejects.toMatchObject({
+      status: 403,
+      message: 'CSRF validation failed.',
+    })
   })
 })

@@ -4,6 +4,7 @@ import {
   getWithdrawalAssetConfig,
   WITHDRAWAL_ASSETS,
   WITHDRAWAL_ASSET_CONFIG,
+  validateWithdrawal,
 } from '@/lib/withdraw'
 import type { Balance } from '@/lib/api'
 
@@ -22,6 +23,14 @@ describe('WITHDRAWAL_ASSET_CONFIG', () => {
     expect(getWithdrawalAssetConfig('cNGN').country).toBe('Nigeria')
     expect(getWithdrawalAssetConfig('cKES').country).toBe('Kenya')
     expect(getWithdrawalAssetConfig('cGHS').country).toBe('Ghana')
+  })
+
+  it.each([
+    ['cNGN', 100_000n],
+    ['cKES', 100_000n],
+    ['cGHS', 100_000n],
+  ] as const)('%s uses its configured currency sub-unit precision', (asset, precision) => {
+    expect(getWithdrawalAssetConfig(asset).minimumPrecisionStroops).toBe(precision)
   })
 })
 
@@ -46,5 +55,52 @@ describe('getWithdrawableAssets', () => {
 
   it('returns empty when no withdrawal asset has a balance', () => {
     expect(getWithdrawableAssets([balance('XLM', 100n), balance('cNGN', 0n)])).toEqual([])
+  })
+})
+
+describe('validateWithdrawal', () => {
+  const config = getWithdrawalAssetConfig('cNGN')
+  const available = 1_000_000_000n
+  const validAmount = 500_000_000n
+  const validAccount = '0123456789'
+
+  it.each([null, 0n, -1n])('requires a positive parsed amount (%s)', (amount) => {
+    expect(validateWithdrawal(amount, config, available, '044', validAccount)).toBe(
+      'Enter an amount to cash out.'
+    )
+  })
+
+  it('rejects amounts below the configured precision', () => {
+    expect(validateWithdrawal(validAmount + 1n, config, available, '044', validAccount)).toBe(
+      'Amount must have at most 2 decimal places.'
+    )
+  })
+
+  it('rejects amounts below the asset minimum', () => {
+    expect(validateWithdrawal(100_000n, config, available, '044', validAccount)).toBe(
+      'The smallest cash-out is 50 cNGN.'
+    )
+  })
+
+  it('rejects amounts above the available balance', () => {
+    expect(validateWithdrawal(1_000_100_000n, config, available, '044', validAccount)).toBe(
+      'That is more than your available balance.'
+    )
+  })
+
+  it('requires a bank selection', () => {
+    expect(validateWithdrawal(validAmount, config, available, '', validAccount)).toBe(
+      'Choose your bank.'
+    )
+  })
+
+  it('requires an account number with the configured length', () => {
+    expect(validateWithdrawal(validAmount, config, available, '044', '123')).toBe(
+      'Account numbers are 10 digits.'
+    )
+  })
+
+  it('accepts a valid withdrawal', () => {
+    expect(validateWithdrawal(validAmount, config, available, '044', validAccount)).toBeNull()
   })
 })

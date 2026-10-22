@@ -16,13 +16,14 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { OZOW_BANKS } from '@/lib/payment-providers'
 import { calculateFees, formatCurrency } from '@/lib/payment-providers'
 import { api } from '@/lib/api'
+import { redirectTo } from '@/lib/navigation'
 
 interface ZarOnrampProps {
   token: string
   onSuccess?: (txHash: string) => void
 }
 
-export function ZarOnramp({ token, onSuccess }: ZarOnrampProps) {
+export function ZarOnramp({ token }: ZarOnrampProps) {
   const [amount, setAmount] = useState('')
   const [selectedBank, setSelectedBank] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
@@ -40,15 +41,25 @@ export function ZarOnramp({ token, onSuccess }: ZarOnrampProps) {
 
     try {
       const returnUrl = `${window.location.origin}/charge?provider=ozow`
-      const { payment_url } = await api.createOzowPayment(
-        token,
-        amountNum,
-        selectedBank,
-        returnUrl
-      )
+      const { payment_url } = await api.createOzowPayment(token, amountNum, selectedBank, returnUrl)
+
+      // Validate the URL before redirecting: must be https:// and on the
+      // expected Ozow domain to prevent open-redirect / javascript: attacks.
+      let parsedUrl: URL
+      try {
+        parsedUrl = new URL(payment_url)
+      } catch {
+        throw new Error('Invalid payment URL received from server.')
+      }
+      if (
+        parsedUrl.protocol !== 'https:' ||
+        !parsedUrl.hostname.endsWith('ozow.com')
+      ) {
+        throw new Error('Payment URL failed security validation. Please contact support.')
+      }
 
       // Redirect to Ozow payment page
-      window.location.href = payment_url
+      window.location.href = parsedUrl.href
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to initiate payment')
       setIsProcessing(false)
@@ -59,9 +70,7 @@ export function ZarOnramp({ token, onSuccess }: ZarOnrampProps) {
     <Card>
       <CardHeader>
         <CardTitle>Buy Crypto with ZAR</CardTitle>
-        <CardDescription>
-          Instant bank transfer via Ozow - Funds arrive in minutes
-        </CardDescription>
+        <CardDescription>Instant bank transfer via Ozow - Funds arrive in minutes</CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-4">

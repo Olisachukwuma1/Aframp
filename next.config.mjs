@@ -3,6 +3,30 @@ import defaultRuntimeCaching from 'next-pwa/cache.js'
 import { withSentryConfig } from '@sentry/nextjs'
 import withBundleAnalyzer from '@next/bundle-analyzer'
 
+/**
+ * Validates that NEXT_API_URL is a safe absolute HTTP(S) URL.
+ * Prevents SSRF attacks if the value is ever user-controlled or misconfigured.
+ */
+function validateBackendUrl(url) {
+  try {
+    const parsed = new URL(url)
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error(`Invalid protocol: ${parsed.protocol} (must be http: or https:)`)
+    }
+    if (!parsed.hostname) {
+      throw new Error('URL must include a hostname')
+    }
+  } catch (err) {
+    console.error(
+      `[FATAL] Invalid NEXT_API_URL: ${url}\n` +
+      `${err instanceof Error ? err.message : String(err)}\n` +
+      `Expected format: http://hostname:port or https://hostname\n` +
+      `Examples: http://127.0.0.1:3000, https://api.example.com`
+    )
+    process.exit(1)
+  }
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // PWA configuration (next-pwa v2 reads options from the `pwa` key)
@@ -35,29 +59,40 @@ const nextConfig = {
     minimumCacheTTL: 60,
   },
   output: 'standalone',
+  // The browser only ever calls this app's own origin at `/backend/*`; this
+  // forwards those requests server-side to the real backend. NEXT_API_URL
+  // (deliberately not NEXT_PUBLIC_*) never reaches client-side code — it
+  // can't leak via devtools, a bundle diff, or CSP `connect-src`.
+  // See docs/adr-001-backend-proxy.md for the rationale and consequences.
+  // Because the rewrite below is same-origin, the browser attaches cookies to
+  // it with no CORS preflight — the CSRF precondition. `middleware.ts` gates
+  // every state-changing `/backend/*` request on a double-submitted token
+  // before it reaches here (see lib/csrf.ts and docs/SECURITY_CSRF.md).
+  rewrites() {
+    const backendUrl = (process.env.NEXT_API_URL ?? 'http://127.0.0.1:3000').replace(/\/$/, '')
+    validateBackendUrl(backendUrl)
+    return [
+      {
+        source: '/backend/:path*',
+        destination: `${backendUrl}/:path*`,
+      },
+    ]
+  },
   headers() {
-    const csp = [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob: https:",
-      "font-src 'self' data:",
-      "connect-src 'self' https://api.coingecko.com https://horizon.stellar.org https://horizon-testnet.stellar.org https://*.sentry.io https://*.ingest.us.sentry.io https://vitals.vercel-insights.com",
-      "frame-ancestors 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-    ].join('; ')
-
+    // NOTE: The Content-Security-Policy header with per-request nonce is now
+    // set by middleware.ts (#632). The static-file entries below apply only to
+    // assets that bypass middleware (e.g. _next/static) and therefore do NOT
+    // include script-src so they don't clobber the nonce injected by the
+    // middleware on page routes.
     return [
       {
         source: '/(.*)',
         headers: [
-          { key: 'Content-Security-Policy', value: csp },
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'X-XSS-Protection', value: '1; mode=block' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          { key: 'Permissions-Policy', value: 'camera=(self), microphone=(), geolocation=()' },
         ],
       },
     ]

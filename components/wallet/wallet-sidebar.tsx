@@ -4,12 +4,14 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   ArrowDownToLine,
+  ArrowLeftRight,
   ArrowUpToLine,
   Banknote,
   Home,
   LogOut,
   Receipt,
   Settings,
+  Users,
   Wallet as WalletIcon,
 } from 'lucide-react'
 
@@ -22,6 +24,7 @@ const LINKS = [
   { label: 'Charge', icon: Banknote, href: '/charge' },
   { label: 'Send money', icon: ArrowUpToLine, href: '/send' },
   { label: 'Contacts', icon: Users, href: '/contacts' },
+  { label: 'Remittances', icon: ArrowLeftRight, href: '/remittances' },
   { label: 'Payments', icon: Receipt, href: '/transactions' },
   { label: 'Cash out', icon: ArrowDownToLine, href: '/withdraw' },
   { label: 'Wallet', icon: WalletIcon, href: '/wallet' },
