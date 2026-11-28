@@ -30,7 +30,6 @@ The test container automatically sets:
 NODE_ENV=test
 NEXT_PUBLIC_DEMO_MODE=true
 NEXT_PUBLIC_STELLAR_NETWORK=TESTNET
-NEXT_PUBLIC_API_URL=http://127.0.0.1:3000
 CI=true
 ```
 
@@ -74,19 +73,25 @@ docker-compose -f docker-compose.test.yml down -v
 ## Troubleshooting
 
 ### Container builds slowly
+
 **Solution**: BuildKit is enabled by default in CI. Locally use:
+
 ```bash
 DOCKER_BUILDKIT=1 docker-compose -f docker-compose.test.yml build
 ```
 
 ### Tests fail in container but work locally
+
 **Solution**: Check environment variables
+
 ```bash
 docker-compose -f docker-compose.test.yml run --rm aframp-test env | sort
 ```
 
 ### Coverage files not generated
+
 **Solution**: Ensure the coverage volume mount is correct
+
 ```bash
 ls -la ./coverage
 ```

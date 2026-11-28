@@ -2,11 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Trash2, ArrowLeft, Plus } from 'lucide-react'
+import { Trash2, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { formatDate } from '@/lib/format-date'
+import { captureError } from '@/lib/observability'
 
 interface Contact {
   id: string
@@ -43,7 +45,7 @@ export default function ContactsPage() {
         setContacts(parsed)
       }
     } catch (error) {
-      console.error('Failed to load contacts:', error)
+      captureError(error, { context: 'Failed to load contacts' })
     } finally {
       setLoading(false)
     }
@@ -54,7 +56,7 @@ export default function ContactsPage() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedContacts))
     } catch (error) {
-      console.error('Failed to save contacts:', error)
+      captureError(error, { context: 'Failed to save contacts' })
     }
   }
 
@@ -140,7 +142,11 @@ export default function ContactsPage() {
   return (
     <div>
       <header className="flex items-center gap-4">
-        <Link href="/send" className="text-dim hover:text-bright transition-colors">
+        <Link
+          href="/send"
+          aria-label="Back to Send money"
+          className="text-dim hover:text-bright transition-colors"
+        >
           <ArrowLeft className="size-5" />
         </Link>
         <div>
@@ -226,9 +232,7 @@ export default function ContactsPage() {
                   <div className="min-w-0 flex-1">
                     <p className="font-bold text-white">{contact.name}</p>
                     <p className="text-dim text-xs font-mono break-all">{contact.address}</p>
-                    <p className="text-dim text-xs mt-1">
-                      Added {new Date(contact.createdAt).toLocaleDateString()}
-                    </p>
+                    <p className="text-dim text-xs mt-1">Added {formatDate(contact.createdAt)}</p>
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <Button
@@ -243,9 +247,14 @@ export default function ContactsPage() {
                       type="button"
                       size="sm"
                       variant="destructive"
-                      onClick={() => deleteContact(contact.id)}
+                      aria-label={`Delete ${contact.name}`}
+                      onClick={() => {
+                        if (window.confirm(`Delete ${contact.name} from your contacts?`)) {
+                          deleteContact(contact.id)
+                        }
+                      }}
                     >
-                      <Trash2 className="size-4" />
+                      <Trash2 className="size-4" aria-hidden />
                     </Button>
                   </div>
                 </div>

@@ -1,4 +1,10 @@
-import { formatStroops, isWholeKobo, parseAmountToStroops, STROOPS_PER_UNIT } from '@/lib/money'
+import {
+  formatStroops,
+  isAmountMultipleOf,
+  isWholeKobo,
+  parseAmountToStroops,
+  STROOPS_PER_UNIT,
+} from '@/lib/money'
 
 describe('formatStroops', () => {
   it('formats a whole unit with no fraction', () => {
@@ -11,6 +17,10 @@ describe('formatStroops', () => {
 
   it('formats a negative amount', () => {
     expect(formatStroops(-25_000_000n)).toBe('-2.5')
+  })
+
+  it('formats a negative whole unit', () => {
+    expect(formatStroops(-10_000_000n)).toBe('-1')
   })
 
   it('formats zero', () => {
@@ -31,6 +41,10 @@ describe('parseAmountToStroops', () => {
     expect(parseAmountToStroops('2.5')).toBe(25_000_000n)
   })
 
+  it('parses all seven supported decimal places', () => {
+    expect(parseAmountToStroops('1.2345678')).toBe(12_345_678n)
+  })
+
   it('rejects more than 7 decimal places rather than rounding', () => {
     expect(parseAmountToStroops('1.12345678')).toBeNull()
   })
@@ -41,10 +55,12 @@ describe('parseAmountToStroops', () => {
     expect(parseAmountToStroops('.')).toBeNull()
   })
 
-  it('round-trips through formatStroops', () => {
-    const stroops = parseAmountToStroops('123.4567')
-    expect(stroops).not.toBeNull()
-    expect(formatStroops(stroops!)).toBe('123.4567')
+  it('round-trips several stroop values through formatting', () => {
+    const values = [0n, 1n, STROOPS_PER_UNIT, 12_345_678n, 999_999_999n]
+
+    for (const value of values) {
+      expect(parseAmountToStroops(formatStroops(value))).toBe(value)
+    }
   })
 })
 
@@ -55,5 +71,19 @@ describe('isWholeKobo', () => {
 
   it('rejects an amount smaller than one kobo', () => {
     expect(isWholeKobo(1n)).toBe(false)
+  })
+})
+
+describe('isAmountMultipleOf', () => {
+  it('accepts amounts aligned to the configured precision', () => {
+    expect(isAmountMultipleOf(200_000n, 100_000n)).toBe(true)
+  })
+
+  it('rejects amounts smaller than the configured precision', () => {
+    expect(isAmountMultipleOf(1n, 100_000n)).toBe(false)
+  })
+
+  it('rejects a non-positive precision', () => {
+    expect(isAmountMultipleOf(1n, 0n)).toBe(false)
   })
 })

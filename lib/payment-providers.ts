@@ -81,7 +81,7 @@ export function calculateFees(
   totalCost: number
 } {
   const config = PROVIDER_CONFIGS[provider]
-  
+
   const processingFee = amount * config.feePercentage + config.fixedFee
   const vat = processingFee * config.vat
   const totalFees = processingFee + vat
@@ -109,6 +109,36 @@ export function formatCurrency(amount: number, currency: FiatCurrency): string {
 
   const symbol = symbols[currency] || currency
   return `${symbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** Pattern that matches `ozow.com` and any subdomain (e.g. `pay.ozow.com`). */
+const OZOW_HOSTNAME_PATTERN = /^([\w-]+\.)*ozow\.com$/
+
+/**
+ * Validates that a payment URL returned by the Ozow backend is safe to
+ * redirect to.  Throws a descriptive `Error` when validation fails so the
+ * caller can surface it as a user-facing message.
+ *
+ * Rules enforced:
+ *  1. The URL must be parseable (no `javascript:` pseudo-URLs, etc.).
+ *  2. The scheme must be `https:`.
+ *  3. The hostname must be `ozow.com` or a subdomain of it.
+ */
+export function validateOzowPaymentUrl(url: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error('Invalid payment URL received from server.')
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Payment URL must use HTTPS.')
+  }
+
+  if (!OZOW_HOSTNAME_PATTERN.test(parsed.hostname)) {
+    throw new Error('Payment URL does not point to a trusted Ozow domain.')
+  }
 }
 
 /**

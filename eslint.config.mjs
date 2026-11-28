@@ -10,8 +10,8 @@ import tseslint from 'typescript-eslint'
 // that patch entirely.
 const config = [
   {
-    // public/sw.js and workbox-*.js are generated PWA build output, not
-    // hand-written source — coverage/ is the Jest coverage report.
+    // Public assets are runtime files, not hand-written source;
+    // coverage/ is the Jest coverage report.
     ignores: [
       '.next/**',
       'node_modules/**',
@@ -23,7 +23,7 @@ const config = [
       '*.d.ts',
     ],
   },
-  nextPlugin.flatConfig.coreWebVitals,
+  nextPlugin.configs['core-web-vitals'],
   jsxA11y.flatConfigs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -46,7 +46,7 @@ const config = [
   {
     // CLI scripts: console output is the interface, and they run directly
     // via `node`, so CommonJS require() is the point rather than a mistake.
-    files: ['scripts/**/*.js'],
+    files: ['scripts/**/*.js', 'scripts/**/*.mjs'],
     rules: {
       'no-console': 'off',
       '@typescript-eslint/no-require-imports': 'off',

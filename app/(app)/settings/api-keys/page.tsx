@@ -1,0 +1,467 @@
+'use client'
+
+import { useCallback, useEffect, useState } from 'react'
+import { AlertTriangle, Copy, Plus, Trash2, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Checkbox } from '@/components/ui/checkbox'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog'
+import { LoadingSpinner } from '@/components/ui/loading-spinner'
+import { ErrorState } from '@/components/ui/error-state'
+import { EmptyStateIllustration } from '@/components/ui/empty-state-illustration'
+import { api, ApiError, type ApiKey, type ApiKeyScope } from '@/lib/api'
+import { formatLastUsedAt, isApiKeyUsageStale } from '@/lib/api-key-usage'
+import {
+  API_KEY_EXPIRY_OPTIONS,
+  API_KEY_SCOPES,
+  describeScopes,
+  expiryFromOption,
+  isApiKeyExpired,
+} from '@/lib/api-key-scopes'
+import { useAuthenticatedSession } from '@/components/session-provider'
+import { formatDateTime } from '@/lib/format-date'
+
+export default function ApiKeysPage() {
+  const { token } = useAuthenticatedSession()
+  const [keys, setKeys] = useState<ApiKey[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
+  const [revokingId, setRevokingId] = useState<string | null>(null)
+  const [newKeyName, setNewKeyName] = useState('')
+  // Least privilege by default: a new key can only read until more is ticked.
+  const [newKeyScopes, setNewKeyScopes] = useState<ApiKeyScope[]>(['read'])
+  const [newKeyExpiry, setNewKeyExpiry] = useState('90')
+  const [newKeyResult, setNewKeyResult] = useState<{ apiKey: ApiKey; fullKey: string } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState<string | null>(null)
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [revokeDialogOpen, setRevokeDialogOpen] = useState(false)
+  const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null)
+  const [keyRevealDialogOpen, setKeyRevealDialogOpen] = useState(false)
+  const [hasAcknowledgedCopy, setHasAcknowledgedCopy] = useState(false)
+
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setLoading(true)
+      setError(null)
+      try {
+        const data = await api.listApiKeys(token, signal)
+        setKeys(data)
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return
+        if (cause instanceof ApiError && cause.status === 0) throw cause
+        setError(cause instanceof Error ? cause.message : 'Could not load API keys')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [token]
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void load(controller.signal)
+    return () => controller.abort()
+  }, [load])
+
+  async function createKey(event: React.FormEvent) {
+    event.preventDefault()
+    const name = newKeyName.trim()
+    if (!name || newKeyScopes.length === 0) return
+
+    setCreating(true)
+    setError(null)
+    try {
+      const result = await api.createApiKey(token, name, {
+        scopes: newKeyScopes,
+        expiresAt: expiryFromOption(newKeyExpiry),
+      })
+      setNewKeyResult({ apiKey: result.api_key, fullKey: result.full_key })
+      setNewKeyName('')
+      setNewKeyScopes(['read'])
+      setNewKeyExpiry('90')
+      setCreateDialogOpen(false)
+      setKeyRevealDialogOpen(true)
+      setHasAcknowledgedCopy(false)
+      await load()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not create API key')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  async function copyFullKey() {
+    if (!newKeyResult) return
+    try {
+      await navigator.clipboard.writeText(newKeyResult.fullKey)
+      setCopyError(null)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopied(false)
+      setCopyError('Could not copy the key. Select it and copy it manually.')
+    }
+  }
+
+  function dismissNewKey() {
+    setNewKeyResult(null)
+    setKeyRevealDialogOpen(false)
+    setHasAcknowledgedCopy(false)
+    setCopied(false)
+    setCopyError(null)
+  }
+
+  function toggleScope(scope: ApiKeyScope, checked: boolean) {
+    setNewKeyScopes((current) =>
+      checked ? [...new Set([...current, scope])] : current.filter((s) => s !== scope)
+    )
+  }
+
+  function openRevoke(key: ApiKey) {
+    setRevokeTarget(key)
+    setRevokeDialogOpen(true)
+  }
+
+  async function confirmRevoke() {
+    if (!revokeTarget) return
+    setRevokingId(revokeTarget.id)
+    setError(null)
+    try {
+      await api.revokeApiKey(token, revokeTarget.id)
+      setRevokeDialogOpen(false)
+      setRevokeTarget(null)
+      await load()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not revoke API key')
+    } finally {
+      setRevokingId(null)
+    }
+  }
+
+  if (error && !keys) {
+    return <ErrorState message={error} onRetry={() => void load()} />
+  }
+
+  return (
+    <div className="space-y-6">
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-bold tracking-tight">API Keys</h2>
+          <p className="text-dim text-sm">
+            Manage keys for programmatic access to your merchant account.
+          </p>
+        </div>
+
+        <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+          <DialogTrigger asChild>
+            <Button size="sm">
+              <Plus className="size-4" aria-hidden />
+              New key
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create API key</DialogTitle>
+              <DialogDescription>
+                Give your key a name so you can tell it apart later. You will only see the full
+                value once.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={createKey} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="key-name">Key name</Label>
+                <Input
+                  id="key-name"
+                  placeholder="e.g. Production server"
+                  value={newKeyName}
+                  onChange={(e) => setNewKeyName(e.target.value)}
+                />
+              </div>
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium">Permissions</legend>
+                {API_KEY_SCOPES.map(({ scope, label, description }) => (
+                  <div key={scope} className="flex items-start gap-3">
+                    <Checkbox
+                      id={`scope-${scope}`}
+                      checked={newKeyScopes.includes(scope)}
+                      onCheckedChange={(checked) => toggleScope(scope, checked === true)}
+                    />
+                    <div className="space-y-0.5">
+                      <Label htmlFor={`scope-${scope}`} className="cursor-pointer text-sm">
+                        {label}
+                      </Label>
+                      <p className="text-dim text-xs">{description}</p>
+                    </div>
+                  </div>
+                ))}
+                {newKeyScopes.length === 0 && (
+                  <p className="text-destructive text-xs">Pick at least one permission.</p>
+                )}
+              </fieldset>
+              <div className="space-y-2">
+                <Label htmlFor="key-expiry">Expires</Label>
+                <select
+                  id="key-expiry"
+                  className="border-hairline bg-panel h-9 w-full rounded-md border px-2 text-sm"
+                  value={newKeyExpiry}
+                  onChange={(e) => setNewKeyExpiry(e.target.value)}
+                >
+                  {API_KEY_EXPIRY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="submit"
+                  disabled={creating || !newKeyName.trim() || newKeyScopes.length === 0}
+                >
+                  {creating ? 'Creating…' : 'Create key'}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      {/* One-time API key reveal dialog */}
+      <Dialog
+        open={keyRevealDialogOpen}
+        onOpenChange={(open) => {
+          // Only allow closing if acknowledged
+          if (!open && hasAcknowledgedCopy) {
+            dismissNewKey()
+          }
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-md"
+          onPointerDownOutside={(e) => {
+            // Prevent closing by clicking outside until acknowledged
+            if (!hasAcknowledgedCopy) {
+              e.preventDefault()
+            }
+          }}
+          onEscapeKeyDown={(e) => {
+            // Prevent closing by ESC until acknowledged
+            if (!hasAcknowledgedCopy) {
+              e.preventDefault()
+            }
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="size-5 text-amber-500" aria-hidden />
+              Save your API key now
+            </DialogTitle>
+            <DialogDescription>
+              This is the only time you'll see the full key. Copy it now and store it securely.
+            </DialogDescription>
+          </DialogHeader>
+
+          {newKeyResult && (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="new-key">API Key</Label>
+                <div className="flex items-center gap-2">
+                  <code
+                    id="new-key"
+                    className="bg-raised flex-1 rounded-lg px-3 py-2 text-xs break-all font-mono text-white select-all"
+                  >
+                    {newKeyResult.fullKey}
+                  </code>
+                  <Button
+                    size="icon-sm"
+                    variant="outline"
+                    onClick={copyFullKey}
+                    aria-label="Copy API key"
+                  >
+                    {copied ? <X className="size-4" /> : <Copy className="size-4" />}
+                  </Button>
+                </div>
+                {copyError && (
+                  <p role="alert" className="text-destructive text-xs">
+                    {copyError}
+                  </p>
+                )}
+              </div>
+
+              <Alert className="border-amber-500/30 bg-amber-500/10">
+                <AlertTriangle className="size-4 text-amber-400" aria-hidden />
+                <AlertDescription className="text-amber-100/90 text-sm">
+                  Once you close this dialog, the key will never be shown again. If you lose it,
+                  you'll need to revoke this key and create a new one.
+                </AlertDescription>
+              </Alert>
+
+              <div className="flex items-start gap-3 rounded-lg border border-hairline bg-panel p-3">
+                <Checkbox
+                  id="acknowledge-copy"
+                  checked={hasAcknowledgedCopy}
+                  onCheckedChange={(checked) => setHasAcknowledgedCopy(checked === true)}
+                  aria-label="I have copied my key"
+                />
+                <div className="space-y-1">
+                  <Label htmlFor="acknowledge-copy" className="text-sm font-medium cursor-pointer">
+                    I have copied my key
+                  </Label>
+                  <p className="text-dim text-xs">
+                    Check this box to confirm you've saved your API key
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button onClick={dismissNewKey} disabled={!hasAcknowledgedCopy} className="w-full">
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {loading && !keys ? (
+        <div className="flex justify-center py-16">
+          <LoadingSpinner />
+        </div>
+      ) : !keys || keys.length === 0 ? (
+        <div className="bg-panel border-hairline flex flex-col items-center gap-3 rounded-2xl border py-12 text-center">
+          <EmptyStateIllustration variant="empty" className="size-16" />
+          <p className="text-dim text-sm max-w-xs">
+            No API keys yet. Create one to start building integrations.
+          </p>
+        </div>
+      ) : (
+        <div className="bg-panel border-hairline rounded-2xl border overflow-hidden">
+          <ul className="divide-y">
+            {keys.map((key) => (
+              <li
+                key={key.id}
+                className={`flex items-start justify-between gap-4 px-5 py-4 ${
+                  !key.revoked_at && isApiKeyUsageStale(key.last_used_at)
+                    ? 'border-l-2 border-amber-400 bg-amber-500/5'
+                    : ''
+                }`}
+              >
+                <div className="min-w-0 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-white">{key.name}</span>
+                    {key.revoked_at && (
+                      <Badge variant="secondary" className="text-xs">
+                        Revoked
+                      </Badge>
+                    )}
+                    {!key.revoked_at && isApiKeyExpired(key) && (
+                      <Badge variant="destructive" className="text-xs">
+                        Expired
+                      </Badge>
+                    )}
+                    {!key.revoked_at &&
+                      !isApiKeyExpired(key) &&
+                      isApiKeyUsageStale(key.last_used_at) && (
+                        <Badge
+                          variant="outline"
+                          className="border-amber-500/30 bg-amber-500/10 text-xs text-amber-200"
+                        >
+                          {key.last_used_at ? 'Inactive 90+ days' : 'Never used'}
+                        </Badge>
+                      )}
+                  </div>
+                  <p className="text-dim text-xs font-mono">{key.key_preview}</p>
+                  <ul className="flex flex-wrap gap-1" aria-label={`Permissions for ${key.name}`}>
+                    {describeScopes(key.scopes).map((scope) => (
+                      <li key={scope}>
+                        <Badge variant="outline" className="text-xs">
+                          {scope}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-dim text-xs">
+                    Created {formatDateTime(key.created_at)} · Last used{' '}
+                    {formatLastUsedAt(key.last_used_at)} ·{' '}
+                    {key.expires_at
+                      ? `${isApiKeyExpired(key) ? 'Expired' : 'Expires'} ${formatDateTime(key.expires_at)}`
+                      : 'Never expires'}
+                  </p>
+                </div>
+
+                {!key.revoked_at && (
+                  <Dialog
+                    open={revokeDialogOpen && revokeTarget?.id === key.id}
+                    onOpenChange={(open) => {
+                      if (!open) {
+                        setRevokeDialogOpen(false)
+                        setRevokeTarget(null)
+                      }
+                    }}
+                  >
+                    <DialogTrigger asChild>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        className="text-destructive hover:bg-destructive/10 hover:text-destructive shrink-0"
+                        onClick={() => openRevoke(key)}
+                        aria-label={`Revoke ${key.name}`}
+                      >
+                        <Trash2 className="size-4" aria-hidden />
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Revoke API key</DialogTitle>
+                        <DialogDescription>
+                          Are you sure you want to revoke <strong>{key.name}</strong>? Any
+                          integration using this key will immediately stop working. This cannot be
+                          undone.
+                        </DialogDescription>
+                      </DialogHeader>
+                      <DialogFooter className="gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => setRevokeDialogOpen(false)}
+                          disabled={revokingId === key.id}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          onClick={confirmRevoke}
+                          disabled={revokingId === key.id}
+                        >
+                          {revokingId === key.id ? 'Revoking…' : 'Revoke key'}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  )
+}

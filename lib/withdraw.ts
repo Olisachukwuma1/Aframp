@@ -1,5 +1,13 @@
 import type { Balance } from '@/lib/api'
-import { BANKS_BY_COUNTRY, type Bank, type BankCountry } from '@/lib/banks'
+import {
+  ACCOUNT_NUMBER_RULES,
+  BANKS_BY_COUNTRY,
+  getAccountNumberRule,
+  type AccountNumberRule,
+  type Bank,
+  type BankCountry,
+} from '@/lib/banks'
+import { formatStroops, isAmountMultipleOf } from '@/lib/money'
 
 /**
  * Assets with a cash-out (offramp) route. cNGN settles to Nigerian bank
@@ -15,7 +23,10 @@ export interface WithdrawalAssetConfig {
   country: BankCountry
   /** Lowest amount a merchant can cash out, in stroops. */
   minimumStroops: bigint
-  accountNumberLength: number
+  /** Smallest supported currency sub-unit, in stroops. */
+  minimumPrecisionStroops: bigint
+  /** Default account-number rule for the country (per-code rules live in banks.ts). */
+  accountNumberRule: AccountNumberRule
 }
 
 /**
@@ -27,24 +38,56 @@ export const WITHDRAWAL_ASSET_CONFIG: Record<WithdrawalAsset, WithdrawalAssetCon
     asset: 'cNGN',
     country: 'Nigeria',
     minimumStroops: 500_000_000n,
-    accountNumberLength: 10,
+    minimumPrecisionStroops: 100_000n,
+    accountNumberRule: ACCOUNT_NUMBER_RULES.Nigeria,
   },
   cKES: {
     asset: 'cKES',
     country: 'Kenya',
     minimumStroops: 100_000_000n,
-    accountNumberLength: 10,
+    minimumPrecisionStroops: 100_000n,
+    accountNumberRule: ACCOUNT_NUMBER_RULES.Kenya,
   },
   cGHS: {
     asset: 'cGHS',
     country: 'Ghana',
     minimumStroops: 50_000_000n,
-    accountNumberLength: 10,
+    minimumPrecisionStroops: 100_000n,
+    accountNumberRule: ACCOUNT_NUMBER_RULES.Ghana,
   },
 }
 
 export function getWithdrawalAssetConfig(asset: WithdrawalAsset): WithdrawalAssetConfig {
   return WITHDRAWAL_ASSET_CONFIG[asset]
+}
+
+export function validateWithdrawal(
+  amount: bigint | null,
+  config: WithdrawalAssetConfig,
+  available: bigint,
+  bankCode: string,
+  accountNumber: string,
+  /** The bank options the form shows (the live list for NGN); defaults to the static one. */
+  banks: Bank[] = getBankOptions(config.asset)
+): string | null {
+  if (amount === null || amount <= 0n) return 'Enter an amount to cash out.'
+  if (!isAmountMultipleOf(amount, config.minimumPrecisionStroops)) {
+    return 'Amount must have at most 2 decimal places.'
+  }
+  if (amount < config.minimumStroops) {
+    return `The smallest cash-out is ${formatStroops(config.minimumStroops)} ${config.asset}.`
+  }
+  if (amount > available) return 'That is more than your available balance.'
+  if (!bankCode) return 'Choose your bank.'
+  if (!banks.some((bank) => bank.code === bankCode)) {
+    return `Choose a valid ${config.country} bank.`
+  }
+  const rule = getAccountNumberRule(config.country, bankCode)
+  if (accountNumber.length < rule.minLength || accountNumber.length > rule.maxLength) {
+    return rule.description
+  }
+  if (!/^\d+$/.test(accountNumber)) return 'Account number must contain digits only.'
+  return null
 }
 
 /** Banks / mobile-money options for the country a given asset settles in. */

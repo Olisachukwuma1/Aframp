@@ -1,12 +1,17 @@
 'use client'
 
-import { useState } from 'react'
-import { useAuthenticatedSession } from '@/components/session-provider'
-import { api } from '@/lib/api'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { AlertTriangle, Bell, Mail, Phone, Save, Trash2, User } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Separator } from '@/components/ui/separator'
+import { LoadingSpinner } from '@/components/ui/loading-spinner'
+import { PushNotificationToggle } from '@/components/push-notification-toggle'
+import { ActiveSessions } from '@/components/active-sessions'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,153 +23,533 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Separator } from '@/components/ui/separator'
+import { api, type Me } from '@/lib/api'
+import { useAuthenticatedSession, useSession } from '@/components/session-provider'
 
-export default function SettingsPage() {
-  const { token, signOut } = useAuthenticatedSession()
-  const [destinationAddress, setDestinationAddress] = useState('')
-  const [confirmationText, setConfirmationText] = useState('')
-  const [isClosing, setIsClosing] = useState(false)
+/** RFC-5322-inspired regex that catches obviously malformed addresses client-side. */
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const PHONE_REGEX = /^\+?[1-9]\d{8,14}$/
+
+function normalizePhone(value: string): string {
+  return value.trim().replace(/[\s()-]/g, '')
+}
+
+function getInitials(name: string | null): string {
+  if (!name) return '?'
+  return name
+    .split(' ')
+    .map((w) => w[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
+}
+
+export default function ProfilePage() {
+  const { token } = useAuthenticatedSession()
+  const { signOut, refreshMe, me: cachedMe, meLoading, meError } = useSession()
+  const router = useRouter()
+
+  const [me, setMe] = useState<Me | null>(null)
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [savingEmail, setSavingEmail] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteConfirmEmail, setDeleteConfirmEmail] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
 
-  const isValidStellarAddress = (address: string) => {
-    return /^G[A-Z0-9]{55}$/.test(address)
+  const [name, setName] = useState('')
+  const [merchantName, setMerchantName] = useState('')
+  const [newEmail, setNewEmail] = useState('')
+  const [emailFormatError, setEmailFormatError] = useState<string | null>(null)
+  const [emailSent, setEmailSent] = useState(false)
+
+  const [newPhone, setNewPhone] = useState('')
+  const [phoneCode, setPhoneCode] = useState('')
+  const [phoneChallenge, setPhoneChallenge] = useState<string | null>(null)
+  const [verifyingNewPhone, setVerifyingNewPhone] = useState(false)
+  const [savingPhone, setSavingPhone] = useState(false)
+  const [phoneChanged, setPhoneChanged] = useState(false)
+  const [phoneError, setPhoneError] = useState<string | null>(null)
+  const displayPhone = me?.phone_number || 'Not set'
+
+  // The profile is loaded once by the session provider; seed the editable form from it.
+  useEffect(() => {
+    if (cachedMe && !me) {
+      setMe(cachedMe)
+      setName(cachedMe.name ?? '')
+      setMerchantName(cachedMe.merchant_name ?? '')
+      setNewEmail(cachedMe.email ?? '')
+    }
+  }, [cachedMe, me])
+
+  function showSuccess(message: string) {
+    setSuccess(message)
+    setTimeout(() => setSuccess(null), 4000)
   }
 
-  const canProceed = 
-    isValidStellarAddress(destinationAddress) && 
-    confirmationText === 'CLOSE'
-
-  const handleCloseAccount = async () => {
-    if (!canProceed) return
-
-    setIsClosing(true)
+  async function saveProfile(event: React.FormEvent) {
+    event.preventDefault()
+    setSavingProfile(true)
     setError(null)
-
     try {
-      await api.closeMerchantAccount(token, destinationAddress)
-      
-      // Clear session and redirect to login
-      signOut()
-      window.location.href = '/login?closed=true'
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to close account')
-      setIsClosing(false)
+      const updated = await api.updateProfile(token, {
+        name: name.trim() || undefined,
+        merchant_name: merchantName.trim() || undefined,
+      })
+      setMe((prev) => (prev ? { ...prev, ...updated } : prev))
+      const result = await refreshMe()
+      if (result.success) {
+        showSuccess('Profile updated successfully.')
+      }
+      // Network errors are handled silently here - the UI already shows the
+      // updated local state, and the next render will retry.
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not update profile')
+    } finally {
+      setSavingProfile(false)
     }
   }
 
+  async function sendEmailVerification(event: React.FormEvent) {
+    event.preventDefault()
+    const email = newEmail.trim()
+
+    if (!email || email === me?.email) {
+      setError('Enter a new email address to change it.')
+      return
+    }
+
+    if (!EMAIL_REGEX.test(email)) {
+      setEmailFormatError('Please enter a valid email address.')
+      return
+    }
+
+    setEmailFormatError(null)
+    setSavingEmail(true)
+    setError(null)
+    try {
+      await api.changeEmail(token, email)
+      setEmailSent(true)
+      showSuccess('Verification email sent. Check your inbox.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not request email change')
+    } finally {
+      setSavingEmail(false)
+    }
+  }
+
+  async function startPhoneChange(event: React.FormEvent) {
+    event.preventDefault()
+    const nextPhone = normalizePhone(newPhone)
+
+    if (!nextPhone || nextPhone === normalizePhone(displayPhone)) {
+      setPhoneError('Enter a different phone number to change it.')
+      return
+    }
+    if (!PHONE_REGEX.test(nextPhone)) {
+      setPhoneError('Enter a valid phone number (9–15 digits, optional + country code).')
+      return
+    }
+
+    setPhoneError(null)
+    setSavingPhone(true)
+    try {
+      const result = await api.changePhone(token, { new_phone: nextPhone })
+      if ('challenge_id' in result) {
+        setPhoneChallenge(result.challenge_id)
+        setVerifyingNewPhone(false)
+        setPhoneCode('')
+      } else {
+        setPhoneError('The server did not start a verification. Please try again.')
+      }
+    } catch (cause) {
+      setPhoneError(cause instanceof Error ? cause.message : 'Could not start phone change')
+    } finally {
+      setSavingPhone(false)
+    }
+  }
+
+  async function verifyPhoneChange(event: React.FormEvent) {
+    event.preventDefault()
+    if (!phoneChallenge) return
+    if (!/^\d{6}$/.test(phoneCode)) {
+      setPhoneError('Enter the 6-digit code sent by SMS.')
+      return
+    }
+
+    setPhoneError(null)
+    setSavingPhone(true)
+    try {
+      const result = await api.changePhone(token, {
+        challenge_id: phoneChallenge,
+        code: phoneCode,
+      })
+      if ('challenge_id' in result) {
+        setPhoneChallenge(result.challenge_id)
+        setVerifyingNewPhone(true)
+        setPhoneCode('')
+        showSuccess('Current number verified. Enter the code sent to your new number.')
+        return
+      }
+      const refreshed = await refreshMe()
+      if (!refreshed.success) throw new Error('Could not refresh your profile.')
+      setPhoneChallenge(null)
+      setPhoneChanged(true)
+      showSuccess('Phone number changed successfully.')
+    } catch (cause) {
+      setPhoneError(cause instanceof Error ? cause.message : 'Could not verify phone number')
+    } finally {
+      setSavingPhone(false)
+    }
+  }
+
+  function cancelPhoneChange() {
+    setPhoneChallenge(null)
+    setPhoneCode('')
+    setPhoneError(null)
+  }
+
+  async function deleteAccount() {
+    setDeleting(true)
+    setError(null)
+    try {
+      await api.deleteAccount(token)
+      signOut()
+      router.replace('/login')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not delete account')
+      setDeleting(false)
+    }
+  }
+
+  function openDeleteDialog() {
+    setDeleteDialogOpen(true)
+    setDeleteConfirmEmail('')
+    setError(null)
+  }
+
+  function closeDeleteDialog() {
+    setDeleteDialogOpen(false)
+    setDeleteConfirmEmail('')
+  }
+
+  async function confirmDelete() {
+    if (deleteConfirmEmail.trim() !== displayEmail) {
+      setError('Email does not match')
+      return
+    }
+    setDeleteDialogOpen(false)
+    await deleteAccount()
+  }
+
+  if (!me && (meLoading || cachedMe)) {
+    return (
+      <div className="flex justify-center py-16">
+        <LoadingSpinner />
+      </div>
+    )
+  }
+
+  const loadError = meError
+    ? meError instanceof Error
+      ? meError.message
+      : 'Could not load profile'
+    : null
+  const shownError = error ?? loadError
+  const displayName = me?.merchant_name ?? me?.name ?? 'Merchant'
+  const displayEmail = me?.email ?? ''
+
   return (
-    <div className="container max-w-4xl py-8 space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Settings</h1>
-        <p className="text-muted-foreground mt-2">
-          Manage your merchant account and preferences
-        </p>
+    <div className="space-y-8">
+      {/* Header with avatar */}
+      <div className="flex items-center gap-4">
+        <Avatar size="lg" className="bg-primary text-primary-foreground">
+          <AvatarFallback className="text-lg font-bold">{getInitials(displayName)}</AvatarFallback>
+        </Avatar>
+        <div>
+          <h2 className="text-lg font-bold tracking-tight text-white">{displayName}</h2>
+          <p className="text-dim text-sm">{displayEmail}</p>
+        </div>
       </div>
 
-      <Separator />
+      {success && (
+        <Alert className="border-emerald-500/30 bg-emerald-500/10">
+          <AlertDescription className="text-emerald-200">{success}</AlertDescription>
+        </Alert>
+      )}
 
-      {/* Danger Zone */}
-      <Card className="border-destructive">
-        <CardHeader>
-          <CardTitle className="text-destructive">Danger Zone</CardTitle>
-          <CardDescription>
-            Irreversible actions that permanently affect your merchant account
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Close Merchant Account</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                This will sweep all remaining balances to your specified Stellar address
-                and permanently close your merchant account. This action cannot be undone.
+      {shownError && (
+        <Alert variant="destructive">
+          <AlertDescription>{shownError}</AlertDescription>
+        </Alert>
+      )}
+
+      {/* Profile form */}
+      <section className="bg-panel border-hairline rounded-2xl border p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <User className="size-4 text-dim" aria-hidden />
+          <h3 className="font-bold text-white">Profile details</h3>
+        </div>
+
+        <form onSubmit={saveProfile} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="name">Your name</Label>
+            <Input
+              id="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your full name"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="merchant-name">Business / merchant name</Label>
+            <Input
+              id="merchant-name"
+              value={merchantName}
+              onChange={(e) => setMerchantName(e.target.value)}
+              placeholder="Your business name"
+            />
+            <p className="text-dim text-xs">
+              This appears on your wallet page and in payment receipts.
+            </p>
+          </div>
+
+          <div className="flex justify-end">
+            <Button type="submit" disabled={savingProfile}>
+              {savingProfile ? (
+                'Saving…'
+              ) : (
+                <>
+                  <Save className="size-4" aria-hidden /> Save changes
+                </>
+              )}
+            </Button>
+          </div>
+        </form>
+      </section>
+
+      {/* Email change */}
+      <section className="bg-panel border-hairline rounded-2xl border p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Mail className="size-4 text-dim" aria-hidden />
+          <h3 className="font-bold text-white">Email address</h3>
+        </div>
+
+        {emailSent ? (
+          <Alert className="border-blue-500/30 bg-blue-500/10">
+            <AlertDescription className="text-blue-200">
+              A verification email has been sent to <strong>{newEmail}</strong>. Click the link in
+              that email to confirm the change. You can still use your current email until then.
+            </AlertDescription>
+          </Alert>
+        ) : (
+          <form onSubmit={sendEmailVerification} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Current email</Label>
+              <Input
+                id="email"
+                type="email"
+                value={newEmail}
+                onChange={(e) => {
+                  setNewEmail(e.target.value)
+                  setEmailFormatError(null)
+                  setEmailSent(false)
+                }}
+                placeholder="you@example.com"
+                aria-describedby={emailFormatError ? 'email-format-error' : undefined}
+                aria-invalid={emailFormatError ? true : undefined}
+              />
+              {emailFormatError && (
+                <p id="email-format-error" className="text-sm text-destructive" role="alert">
+                  {emailFormatError}
+                </p>
+              )}
+              <p className="text-dim text-xs">
+                Changing your email requires verification. We will send a confirmation link to the
+                new address.
               </p>
             </div>
 
+            <div className="flex justify-end">
+              <Button
+                type="submit"
+                variant="outline"
+                disabled={savingEmail || !newEmail.trim() || newEmail.trim() === displayEmail}
+              >
+                {savingEmail ? 'Sending…' : 'Change email'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </section>
+
+      {/* Phone number change */}
+      <section className="bg-panel border-hairline rounded-2xl border p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Phone className="size-4 text-dim" aria-hidden />
+          <h3 className="font-bold text-white">Phone number</h3>
+        </div>
+
+        <p className="text-dim text-sm">
+          Current number: <strong className="text-foreground">{displayPhone}</strong>
+        </p>
+
+        {phoneChanged ? (
+          <Alert className="border-emerald-500/30 bg-emerald-500/10">
+            <AlertDescription className="text-emerald-200">
+              Your phone number has been changed. Your new number will be used for OTP next time.
+            </AlertDescription>
+          </Alert>
+        ) : !phoneChallenge ? (
+          <form onSubmit={startPhoneChange} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="destination">Destination Stellar Address</Label>
+              <Label htmlFor="new-phone">New phone number</Label>
               <Input
-                id="destination"
-                placeholder="GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-                value={destinationAddress}
-                onChange={(e) => setDestinationAddress(e.target.value)}
-                className={
-                  destinationAddress && !isValidStellarAddress(destinationAddress)
-                    ? 'border-destructive'
-                    : ''
-                }
+                id="new-phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                value={newPhone}
+                onChange={(event) => {
+                  setNewPhone(event.target.value)
+                  setPhoneError(null)
+                }}
+                placeholder="+254712345678"
               />
-              {destinationAddress && !isValidStellarAddress(destinationAddress) && (
-                <p className="text-sm text-destructive">
-                  Invalid Stellar address format
+              <p className="text-dim text-xs">
+                We will send a code to your current number and then to the new one. Both must be
+                verified before the change takes effect.
+              </p>
+              {phoneError && (
+                <p className="text-sm text-destructive" role="alert">
+                  {phoneError}
                 </p>
               )}
             </div>
-
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
+            <div className="flex justify-end">
+              <Button type="submit" variant="outline" disabled={savingPhone || !newPhone.trim()}>
+                {savingPhone ? 'Sending…' : 'Change phone'}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={verifyPhoneChange} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="phone-code">
+                {verifyingNewPhone
+                  ? 'Code sent to your new number'
+                  : 'Code sent to your current number'}
+              </Label>
+              <Input
+                id="phone-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={phoneCode}
+                onChange={(event) => {
+                  setPhoneCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                  setPhoneError(null)
+                }}
+                placeholder="6-digit code"
+              />
+            </div>
+            {phoneError && (
+              <p className="text-sm text-destructive" role="alert">
+                {phoneError}
+              </p>
             )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={cancelPhoneChange}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={savingPhone || phoneCode.length !== 6}>
+                {savingPhone ? 'Verifying…' : 'Verify code'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </section>
 
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button
-                  variant="destructive"
-                  disabled={!isValidStellarAddress(destinationAddress)}
-                >
-                  Close Account
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-                  <AlertDialogDescription className="space-y-4">
-                    <p>
-                      This action will:
-                    </p>
-                    <ul className="list-disc list-inside space-y-1 text-sm">
-                      <li>Sweep all remaining XLM and token balances to {destinationAddress}</li>
-                      <li>Merge your Stellar merchant account</li>
-                      <li>Permanently delete your merchant account data</li>
-                      <li>Log you out immediately</li>
-                    </ul>
-                    <p className="font-semibold">
-                      This action is irreversible and cannot be undone.
-                    </p>
-                    <div className="space-y-2">
-                      <Label htmlFor="confirm">
-                        Type <span className="font-mono font-bold">CLOSE</span> to confirm
-                      </Label>
-                      <Input
-                        id="confirm"
-                        placeholder="Type CLOSE"
-                        value={confirmationText}
-                        onChange={(e) => setConfirmationText(e.target.value)}
-                        autoComplete="off"
-                      />
-                    </div>
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel onClick={() => setConfirmationText('')}>
-                    Cancel
-                  </AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={handleCloseAccount}
-                    disabled={!canProceed || isClosing}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    {isClosing ? 'Closing Account...' : 'Close Account Permanently'}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Push notifications */}
+      <section className="bg-panel border-hairline rounded-2xl border p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Bell className="size-4 text-dim" aria-hidden />
+          <h3 className="font-bold text-white">Notifications</h3>
+        </div>
+        <PushNotificationToggle />
+      </section>
+
+      <ActiveSessions />
+
+      <Separator />
+
+      {/* Danger zone */}
+      <section className="bg-panel border-hairline rounded-2xl border p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="size-4 text-destructive" aria-hidden />
+          <h3 className="font-bold text-destructive">Danger zone</h3>
+        </div>
+
+        <p className="text-dim text-sm">
+          Deleting your account permanently removes all your data, including payment history,
+          wallet, and API keys. This action cannot be undone.
+        </p>
+
+        <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+          <AlertDialogTrigger asChild>
+            <Button variant="destructive" className="w-full sm:w-auto" onClick={openDeleteDialog}>
+              <Trash2 className="size-4" aria-hidden /> Delete account
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete your account?</AlertDialogTitle>
+              {/* AlertDialogDescription renders a <p>; asChild avoids nesting <p>/<div> in it. */}
+              <AlertDialogDescription asChild>
+                <div className="space-y-3">
+                  <p>
+                    This will permanently delete your merchant account, wallet, payment history, and
+                    all API keys. Any pending payments or withdrawals will be lost.
+                  </p>
+                  <p className="font-semibold text-destructive">This action cannot be undone.</p>
+                  <div className="space-y-2 pt-2">
+                    <Label htmlFor="delete-confirm-email" className="text-foreground">
+                      Type your email address to confirm: <strong>{displayEmail}</strong>
+                    </Label>
+                    <Input
+                      id="delete-confirm-email"
+                      type="email"
+                      placeholder={displayEmail}
+                      value={deleteConfirmEmail}
+                      onChange={(e) => setDeleteConfirmEmail(e.target.value)}
+                      disabled={deleting}
+                      autoComplete="off"
+                    />
+                  </div>
+                </div>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleting} onClick={closeDeleteDialog}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault()
+                  void confirmDelete()
+                }}
+                disabled={deleting || deleteConfirmEmail.trim() !== displayEmail}
+                className="bg-destructive text-white hover:bg-destructive/90"
+              >
+                {deleting ? 'Deleting…' : 'Yes, delete my account'}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </section>
     </div>
   )
 }

@@ -7,8 +7,6 @@ info:
 servers:
   - url: https://api.aframp.com
     description: Production API
-  - url: http://127.0.0.1:3000
-    description: Local development API
 paths:
   /signup:
     post:
@@ -19,7 +17,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [email, password, name]
+              required: [email, password, name, accepted_terms_version]
               properties:
                 email:
                   type: string
@@ -28,6 +26,9 @@ paths:
                   type: string
                 name:
                   type: string
+                accepted_terms_version:
+                  type: string
+                  description: Version of the terms and privacy policy the merchant accepted. Signup without it is rejected with 400.
       responses:
         '200':
           description: Authenticated user and merchant session
@@ -192,6 +193,70 @@ paths:
       responses:
         '200':
           description: Payment request detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentRequest'
+  /sessions:
+    get:
+      summary: List the signed-in devices for this account
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, created_at, last_seen_at]
+                  properties:
+                    id:
+                      type: string
+                    device:
+                      type: string
+                      nullable: true
+                    ip:
+                      type: string
+                      nullable: true
+                    created_at:
+                      type: string
+                      format: date-time
+                    last_seen_at:
+                      type: string
+                      format: date-time
+                    current:
+                      type: boolean
+  /sessions/{id}:
+    delete:
+      summary: Sign a device out; its token stops working immediately
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Session revoked
+  /payment-requests/{id}/cancel:
+    post:
+      summary: Cancel a pending payment request (owner only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The request, now with status cancelled
           content:
             application/json:
               schema:
@@ -376,7 +441,21 @@ components:
           format: date-time
     Payment:
       type: object
-      required: [id, merchant_id, wallet_id, wallet_address, tx_hash, amount_stroops, asset, network, status, confirmations, created_at, updated_at]
+      required:
+        [
+          id,
+          merchant_id,
+          wallet_id,
+          wallet_address,
+          tx_hash,
+          amount_stroops,
+          asset,
+          network,
+          status,
+          confirmations,
+          created_at,
+          updated_at,
+        ]
       properties:
         id:
           type: string
@@ -411,7 +490,19 @@ components:
           format: date-time
     PaymentRequest:
       type: object
-      required: [id, merchant_id, address, network, amount_stroops, asset, memo, status, expires_at, created_at]
+      required:
+        [
+          id,
+          merchant_id,
+          address,
+          network,
+          amount_stroops,
+          asset,
+          memo,
+          status,
+          expires_at,
+          created_at,
+        ]
       properties:
         id:
           type: string
@@ -434,9 +525,13 @@ components:
           type: string
         memo:
           type: string
+        merchant_name:
+          type: string
+          nullable: true
+          description: Business name shown to the customer on the public payment page.
         status:
           type: string
-          enum: [pending, paid, expired]
+          enum: [pending, paid, expired, cancelled]
         allow_partial:
           type: boolean
         expires_at:
@@ -450,7 +545,18 @@ components:
           nullable: true
     Refund:
       type: object
-      required: [id, payment_id, merchant_id, amount_stroops, asset, status, recipient, created_at, updated_at]
+      required:
+        [
+          id,
+          payment_id,
+          merchant_id,
+          amount_stroops,
+          asset,
+          status,
+          recipient,
+          created_at,
+          updated_at,
+        ]
       properties:
         id:
           type: string
@@ -480,7 +586,21 @@ components:
           format: date-time
     Withdrawal:
       type: object
-      required: [id, merchant_id, amount_stroops, asset, status, provider, provider_reference, bank_code, account_number, failure_reason, created_at, updated_at]
+      required:
+        [
+          id,
+          merchant_id,
+          amount_stroops,
+          asset,
+          status,
+          provider,
+          provider_reference,
+          bank_code,
+          account_number,
+          failure_reason,
+          created_at,
+          updated_at,
+        ]
       properties:
         id:
           type: string

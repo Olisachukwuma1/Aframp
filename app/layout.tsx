@@ -1,8 +1,10 @@
 import type React from 'react'
 import type { Metadata, Viewport } from 'next'
+import { headers } from 'next/headers'
 import { Atkinson_Hyperlegible } from 'next/font/google'
 import { ThemeProvider } from '@/components/theme-provider'
 import { SessionProvider } from '@/components/session-provider'
+import { InstallPromptBanner } from '@/components/pwa/install-prompt-banner'
 import './globals.css'
 
 // The Aframp brand typeface — picked for legibility at small sizes,
@@ -26,11 +28,16 @@ export const viewport: Viewport = {
   themeColor: '#10b981',
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  // Read the nonce injected by proxy.ts so we can apply it to the inline
+  // service-worker registration script, satisfying the nonce-based CSP (#632).
+  const headersList = await headers()
+  const nonce = headersList.get('x-nonce') ?? undefined
+
   return (
     <html lang="en" className={atkinson.variable} suppressHydrationWarning>
       <body className="font-sans antialiased" suppressHydrationWarning>
@@ -39,9 +46,25 @@ export default function RootLayout({
           defaultTheme="system"
           enableSystem
           disableTransitionOnChange
+          nonce={nonce}
         >
           <SessionProvider>{children}</SessionProvider>
+          <InstallPromptBanner />
         </ThemeProvider>
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/sw.js').catch(function(err) {
+                    console.error('SW registration failed:', err);
+                  });
+                });
+              }
+            `,
+          }}
+        />
       </body>
     </html>
   )

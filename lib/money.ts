@@ -6,6 +6,8 @@
  * is not 0.3, and this is a ledger.
  */
 
+import { APP_LOCALE } from '@/lib/locale'
+
 export const DECIMALS = 7
 export const STROOPS_PER_UNIT = 10_000_000n
 
@@ -15,7 +17,7 @@ export function formatStroops(stroops: bigint): string {
   const abs = negative ? -stroops : stroops
   const whole = abs / STROOPS_PER_UNIT
   const fraction = (abs % STROOPS_PER_UNIT).toString().padStart(DECIMALS, '0').replace(/0+$/, '')
-  return `${negative ? '-' : ''}${whole.toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`
+  return `${negative ? '-' : ''}${whole.toLocaleString(APP_LOCALE)}${fraction ? `.${fraction}` : ''}`
 }
 
 /**
@@ -35,6 +37,11 @@ export function parseAmountToStroops(input: string): bigint | null {
 /** Withdrawals settle in kobo, so amounts must be whole multiples of 100,000 stroops. */
 export const STROOPS_PER_KOBO = 100_000n
 
+/** Returns whether an amount is aligned to the asset's supported increment. */
+export function isAmountMultipleOf(stroops: bigint, incrementStroops: bigint): boolean {
+  return incrementStroops > 0n && stroops % incrementStroops === 0n
+}
+
 export function isWholeKobo(stroops: bigint): boolean {
-  return stroops % STROOPS_PER_KOBO === 0n
+  return isAmountMultipleOf(stroops, STROOPS_PER_KOBO)
 }

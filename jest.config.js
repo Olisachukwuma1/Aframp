@@ -9,9 +9,9 @@ const customJestConfig = {
   setupFilesAfterEnv: [path.resolve(__dirname, './jest.setup.ts')],
   testEnvironment: 'jest-environment-jsdom',
   testEnvironmentOptions: {
-    customExportConditions: [''],
+    customExportConditions: ['node', 'node-addons'],
   },
-  modulePathIgnorePatterns: ['<rootDir>/helpcenter/', '<rootDir>/.claude/'],
+  modulePathIgnorePatterns: ['<rootDir>/helpcenter/', '<rootDir>/.claude/', '<rootDir>/.kilo/'],
   moduleNameMapper: {
     '^@/(.*)$': '<rootDir>/$1',
   },
@@ -29,9 +29,21 @@ const customJestConfig = {
   // A repo-wide global threshold can't be met while most of the codebase has
   // no tests yet — real enforcement is scripts/check-diff-coverage.js, which
   // requires 80% coverage only on files a PR actually adds or changes.
+  // Branch coverage was 70.97% when the floor was added, with lines at 84%.
+  // All four metrics now share that floor so none can silently regress
+  // while another is watched (#1180): raise all four together whenever
+  // coverage improves.
+  coverageThreshold: {
+    global: {
+      branches: 70,
+      functions: 70,
+      lines: 70,
+      statements: 70,
+    },
+  },
   coverageReporters: ['json-summary', 'json', 'lcov', 'text'],
   testMatch: ['**/__tests__/**/*.[jt]s?(x)', '**/?(*.)+(spec|test).[jt]s?(x)'],
-  testPathIgnorePatterns: ['/node_modules/', '/.next/', '/helpcenter/'],
+  testPathIgnorePatterns: ['/node_modules/', '/.next/', '/helpcenter/', '/.kilo/', '/e2e/'],
 }
 
 module.exports = async () => {

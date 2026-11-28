@@ -5,50 +5,63 @@ import { Check, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
-import { api, ApiError, type Me, type Wallet } from '@/lib/api'
-import { useAuthenticatedSession } from '@/components/session-provider'
+import { BalanceFigure } from '@/components/wallet/balance-figure'
+import { ZarOnramp } from '@/components/onramp/zar-onramp'
+import { api, ApiError, type Balance, type Wallet } from '@/lib/api'
+import { useAuthenticatedSession, useSession } from '@/components/session-provider'
+
+/** Gate the ZAR on-ramp (Ozow flow) behind an env flag so it only renders when enabled. */
+const ZAR_ONRAMP_ENABLED = process.env.NEXT_PUBLIC_ZAR_ONRAMP_ENABLED === 'true'
 
 export default function WalletPage() {
   const { token } = useAuthenticatedSession()
+  const { me } = useSession()
   const [wallet, setWallet] = useState<Wallet | null>(null)
-  const [me, setMe] = useState<Me | null>(null)
+  const [balances, setBalances] = useState<Balance[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      // The JWT holds only ids, so identity comes from /me on every load.
-      setMe(await api.getMe(token))
-    } catch {
-      // Non-fatal: the address below is the part that matters.
-    }
-    try {
-      setWallet(await api.getWallet(token))
-      setError(null)
-    } catch (cause) {
-      // 400 "no wallet created yet" is the expected state for a new merchant.
-      if (cause instanceof ApiError && cause.status === 400) setWallet(null)
-      else if (cause instanceof ApiError && cause.status === 0)
-        setError('backend-down')
-      else setError(cause instanceof Error ? cause.message : 'Could not load your account')
-    } finally {
-      setLoading(false)
-    }
-  }, [token])
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setLoading(true)
+      try {
+        setWallet(await api.getWallet(token, signal))
+        setError(null)
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return
+        // 400 "no wallet created yet" is the expected state for a new merchant.
+        if (cause instanceof ApiError && cause.status === 400) setWallet(null)
+        else if (cause instanceof ApiError && cause.status === 0) setError('backend-down')
+        else setError(cause instanceof Error ? cause.message : 'Could not load your account')
+      } finally {
+        setLoading(false)
+      }
+      try {
+        setBalances(await api.getBalances(token, signal))
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return
+        // Non-fatal: the address above is what matters if this fails.
+      }
+    },
+    [token]
+  )
 
   useEffect(() => {
-    void load()
+    const controller = new AbortController()
+    void load(controller.signal)
+    return () => controller.abort()
   }, [load])
 
   async function createWallet() {
+    const controller = new AbortController()
     setCreating(true)
     setError(null)
     try {
-      setWallet(await api.createWallet(token))
+      setWallet(await api.createWallet(token, controller.signal))
     } catch (cause) {
+      if (cause instanceof DOMException && cause.name === 'AbortError') return
       setError(cause instanceof Error ? cause.message : 'Could not set up your address')
     } finally {
       setCreating(false)
@@ -57,9 +70,16 @@ export default function WalletPage() {
 
   async function copyAddress() {
     if (!wallet) return
-    await navigator.clipboard.writeText(wallet.address)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    try {
+      await navigator.clipboard.writeText(wallet.address)
+      setError(null)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch (clipboardError) {
+      // Clipboard API can fail in non-secure contexts or when permissions are denied
+      setError('Could not copy — please select and copy the address manually using your browser.')
+      console.error('Clipboard copy failed:', clipboardError)
+    }
   }
 
   if (loading) {
@@ -73,21 +93,47 @@ export default function WalletPage() {
   return (
     <div>
       <header>
-        <h1 className="truncate text-2xl font-bold tracking-tight">
-          {me?.merchant_name ?? me?.name ?? 'Account'}
-        </h1>
-        {me?.email && <p className="text-dim mt-1 truncate text-sm">{me.email}</p>}
+        <h1 className="text-2xl font-bold tracking-tight">Wallet</h1>
+        {(me?.merchant_name ?? me?.name) && (
+          <p className="text-dim mt-1 truncate text-sm">
+            {me?.merchant_name ?? me?.name}
+            {me?.email && ` · ${me.email}`}
+          </p>
+        )}
       </header>
 
       <div className="mt-6 max-w-xl space-y-5">
         {error && (
-          <Alert variant="destructive">
+          <Alert variant="destructive" role="alert">
             <AlertDescription>
               {error === 'backend-down'
                 ? "We can't connect to the payment server right now. Please try again in a moment."
                 : error}
             </AlertDescription>
           </Alert>
+        )}
+
+        {wallet && balances.length > 0 && (
+          <section
+            aria-live="polite"
+            aria-atomic="true"
+            aria-label="Balances"
+            className="bg-panel border-hairline space-y-4 rounded-2xl border p-5"
+          >
+            <h2 className="text-dim text-xs font-bold tracking-widest uppercase">Balances</h2>
+            <ul className="space-y-4">
+              {balances.map((balance) => (
+                <li key={balance.asset}>
+                  <BalanceFigure
+                    asset={balance.asset}
+                    available={balance.available}
+                    pending={balance.pending}
+                    size="sm"
+                  />
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
 
         {wallet ? (
@@ -125,6 +171,13 @@ export default function WalletPage() {
             </Button>
           </section>
         ) : null}
+
+        {wallet && ZAR_ONRAMP_ENABLED && (
+          <section aria-label="Add funds" className="space-y-3">
+            <h2 className="text-dim text-xs font-bold tracking-widest uppercase">Add funds</h2>
+            <ZarOnramp token={token} />
+          </section>
+        )}
       </div>
     </div>
   )

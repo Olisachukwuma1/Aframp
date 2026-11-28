@@ -2,10 +2,10 @@
 
 [![CI](https://github.com/kellymusk/Aframp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kellymusk/Aframp/actions/workflows/ci.yml)
 [![Uptime](https://github.com/kellymusk/Aframp/actions/workflows/uptime-monitor.yml/badge.svg?branch=main)](https://github.com/kellymusk/Aframp/actions/workflows/uptime-monitor.yml)
-[![codecov](https://img.shields.io/badge/coverage-70%25-brightgreen)](https://codecov.io/gh/kellymusk/Aframp)
+[![Coverage](https://codecov.io/gh/kellymusk/Aframp/branch/main/graph/badge.svg)](https://codecov.io/gh/kellymusk/Aframp)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0-blue)](https://www.typescriptlang.org/)
-[![Next.js](https://img.shields.io/badge/next.js-16.1-black)](https://nextjs.org/)
+[![Next.js](https://img.shields.io/badge/next.js-15.3-black)](https://nextjs.org/)
 
 ## Don't Trust, Verify
 
@@ -28,20 +28,20 @@ The AFRAMP frontend repository is organized for clarity and scalability:
 ```
 Aframp/
 ├── public/                 # Static assets
-├── src/
-│   ├── assets/            # Images, fonts, icons
-│   ├── components/        # Reusable UI components (Buttons, Modals, etc.)
-│   ├── contexts/          # React contexts (Auth, Wallet, Theme)
-│   ├── hooks/             # Custom React hooks
-│   ├── pages/             # Top-level page components (Dashboard, Onramp, Bills)
-│   ├── services/          # API and blockchain service integrations
-│   ├── styles/            # Global and module CSS/Tailwind config
-│   ├── utils/             # Helper functions and constants
-│   └── App.js             # Main application component
+├── app/                    # Next.js App Router
+│   ├── (app)/            # Authenticated routes
+│   ├── layout.tsx        # Root layout
+│   └── page.tsx          # Auth/login page
+├── components/             # Reusable UI components
+├── lib/                    # Utilities, API client, types
 ├── .env.example           # Environment variables template
 ├── package.json
 └── README.md
 ```
+
+## Architecture Decisions
+
+- [ADR 001: Keep Backend Requests Behind a Same-Origin Proxy](docs/adr-001-backend-proxy.md)
 
 ---
 
@@ -53,9 +53,17 @@ The client-side contract is documented in the repository root OpenAPI file:
 
 This spec covers the backend endpoints used by the frontend in [lib/api.ts](lib/api.ts).
 
+### PWA Status
+
+Offline caching and installable PWA support are currently disabled. Web Push payment alerts
+remain available through a push-only service worker; the app does not cache pages or API data
+for offline use.
+
 ## �🚀 Quick Start (5 Minutes)
 
 Get AFRAMP running locally in under 5 minutes with our automated setup script or manual installation.
+
+> ⚠️ **Port constraint — read this first.** The backend binds port **3000** and its `CORS_ALLOWED_ORIGINS` defaults to `http://localhost:3001`. The frontend must therefore run on **3001**, not Next.js's default 3000. If you start the app on 3000, every API request will fail with a silent CORS/network error. Set `NEXT_API_URL` in `.env.local` to your backend's URL (there is no default) and run the frontend on 3001 (see `.env.example`).
 
 ### Automated Setup (Easiest) ⚡
 
@@ -83,7 +91,7 @@ The script will:
 - ✅ Let you choose Docker or Node.js setup
 - ✅ Install dependencies and start the app
 
-Access the app at `http://localhost:3000` ✅
+Access the app at `http://localhost:3001` ✅
 
 ### Manual Setup
 
@@ -99,11 +107,11 @@ cp .env.example .env.local
 docker-compose -f docker-compose.dev.yml up
 ```
 
-Access the app at `http://localhost:3000` ✅
+Access the app at `http://localhost:3001` ✅ (the frontend is mapped to 3001 so it matches the backend's default `CORS_ALLOWED_ORIGINS`; see `docker-compose.dev.yml`).
 
 #### Option 2: Node.js
 
-**Prerequisites:** Node.js v18+ & npm
+**Prerequisites:** Node.js v20+ & npm
 
 ```bash
 # Clone and install
@@ -113,47 +121,37 @@ npm install
 
 # Configure and run
 cp .env.example .env.local
-npm run dev
+npm run dev -- -p 3001
 ```
 
-Access the app at `http://localhost:3000` ✅
+Access the app at `http://localhost:3001` ✅ (run on 3001 so the backend's default `CORS_ALLOWED_ORIGINS=http://localhost:3001` accepts your requests).
 
 ---
+
+## 📲 PWA
+
+Aframp is installable; see [docs/PWA.md](docs/PWA.md).
 
 ## 🔧 Environment Variables
 
-Copy `.env.example` to `.env.local` and configure the following:
+Copy `.env.example` to `.env.local` and configure the following. This table
+is generated from `.env.example` — run `npm run docs:env` after editing that
+file to regenerate it, rather than hand-editing the table below; CI fails if
+the two ever drift apart.
 
-### Required Variables
+<!-- ENV_VARS_TABLE:START -->
 
-| Variable                  | Description                                                   | Example      |
-| ------------------------- | ------------------------------------------------------------- | ------------ |
-| `NEXT_PUBLIC_DEMO_MODE`   | Enable mock wallet for testing (set to `false` in production) | `false`      |
-| `NEXT_PUBLIC_CNGN_ISSUER` | Stellar CNGN token issuer address                             | `GXXXXXX...` |
+| Variable                      | Type                             | Required | Default                                                 | Example                                                                   |
+| ----------------------------- | -------------------------------- | -------- | ------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `NEXT_API_URL`                | string (URL)                     | Yes      | —                                                       | `https://api.example.com`                                                 |
+| `NEXT_PUBLIC_STELLAR_NETWORK` | string (enum: testnet \| public) | No       | `testnet`                                               | `testnet`                                                                 |
+| `NEXT_PUBLIC_SENTRY_DSN`      | string (Sentry DSN URL)          | No       | `(unset — client-side error reporting disabled)`        | `https://examplePublicKey@o0.ingest.sentry.io/0`                          |
+| `SENTRY_DSN`                  | string (Sentry DSN URL)          | No       | `(falls back to NEXT_PUBLIC_SENTRY_DSN, then disabled)` | `https://examplePrivateKey@o0.ingest.sentry.io/1`                         |
+| `SENTRY_AUTH_TOKEN`           | string (Sentry auth token)       | No       | `(unset — source map upload skipped)`                   | `sntrys_eyJpYXQiOjE3MDAwMDAwMDAuMCwidXJsIjoiaHR0cHM6Ly9zZW50cnkuaW8ifQ==` |
+| `SENTRY_ORG`                  | string                           | No       | `(unset — source map upload skipped)`                   | `aframp`                                                                  |
+| `SENTRY_PROJECT`              | string                           | No       | `(unset — source map upload skipped)`                   | `aframp-pay`                                                              |
 
-### Payment Gateway Configuration
-
-| Variable                             | Description                          | Required For        |
-| ------------------------------------ | ------------------------------------ | ------------------- |
-| `NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY`    | Paystack public key                  | Card payments       |
-| `PAYSTACK_SECRET_KEY`                | Paystack secret key (server-side)    | Payment processing  |
-| `NEXT_PUBLIC_FLUTTERWAVE_PUBLIC_KEY` | Flutterwave public key               | Mobile money        |
-| `FLUTTERWAVE_SECRET_KEY`             | Flutterwave secret key (server-side) | Payment processing  |
-| `FLUTTERWAVE_ENCRYPTION_KEY`         | Flutterwave encryption key           | Secure transactions |
-
-### Optional Variables
-
-| Variable                   | Description                              | Default |
-| -------------------------- | ---------------------------------------- | ------- |
-| `NEXT_PUBLIC_BILLS_WS_URL` | WebSocket URL for real-time bill updates | N/A     |
-
-### Getting API Keys
-
-- **Paystack**: Sign up at [paystack.com](https://paystack.com) → Settings → API Keys
-- **Flutterwave**: Sign up at [flutterwave.com](https://flutterwave.com) → Settings → API
-- **Stellar Issuer**: Use testnet issuer for development or contact AFRAMP team for production issuer
-
----
+<!-- ENV_VARS_TABLE:END -->
 
 ## 🐳 Docker Deployment
 
@@ -176,6 +174,8 @@ docker-compose logs -f
 docker-compose down
 ```
 
+> ⚠️ The dev compose file maps the frontend to port **3001** because the backend binds 3000 and only allows `http://localhost:3001` by default via `CORS_ALLOWED_ORIGINS`. See `docker-compose.dev.yml` for the inline explanation.
+
 ### Production
 
 ```bash
@@ -183,7 +183,7 @@ docker-compose down
 docker build -t aframp:latest .
 
 # Run production container
-docker run -p 3000:3000 --env-file .env.local aframp:latest
+docker run -p 3001:3001 --env-file .env.local aframp:latest
 
 # Or use docker-compose
 docker-compose -f docker-compose.prod.yml up -d
@@ -256,132 +256,34 @@ docker push your-registry/aframp:latest
 
 ---
 
-## 📦 Available Scripts
+## 🛠️ Troubleshooting
 
-| Command                 | Description                                    |
-| ----------------------- | ---------------------------------------------- |
-| `npm run dev`           | Start development server with hot-reload       |
-| `npm run build`         | Build optimized production bundle              |
-| `npm start`             | Start production server (requires build first) |
-| `npm test`              | Run Jest test suite                            |
-| `npm run test:watch`    | Run tests in watch mode                        |
-| `npm run test:coverage` | Generate test coverage report                  |
-| `npm run lint`          | Check code for linting errors                  |
-| `npm run format`        | Format code with Prettier                      |
-| `npm run type-check`    | Run TypeScript type checking                   |
+### All API calls fail with a network error
 
----
+If every request to the backend fails (browser console shows CORS errors or `net::ERR_FAILED`), you are almost certainly running the frontend on the wrong port.
 
-## 🔍 Development Prerequisites
+- The backend binds port **3000** and its `CORS_ALLOWED_ORIGINS` defaults to `http://localhost:3001`.
+- Next.js defaults to port **3000**, which collides with the backend and is not in the allowed origins list.
 
-### Required
-
-- **Node.js** v18 or higher
-- **npm** v9 or higher
-- **Git**
-- Modern web browser (Chrome, Firefox, Safari, Edge)
-
-### Recommended
-
-- **Docker Desktop** (for containerized development)
-- **Stellar Freighter Wallet** (browser extension for testing)
-- **VS Code** with recommended extensions:
-  - ESLint
-  - Prettier
-  - Tailwind CSS IntelliSense
-  - TypeScript and JavaScript Language Features
-
-### Verify Installation
+**Fix:** run the frontend on **3001** and point it at the backend:
 
 ```bash
-node --version  # Should be v18+
-npm --version   # Should be v9+
-docker --version  # Optional but recommended
+# Node.js
+npm run dev -- -p 3001
+
+# Docker (already configured in docker-compose.dev.yml)
+docker-compose -f docker-compose.dev.yml up
 ```
 
----
-
-## 💳 Onramp Page (Wallet-Connected Flow)
-
-The onramp page lives at `/onramp` and assumes a connected Stellar wallet address is already stored in `localStorage`.
-
-### Run Locally
-
-1. Start the dev server (see setup above).
-2. Visit `http://localhost:3000/onramp`.
-3. Ensure `localStorage.walletAddress` is set to a valid Stellar address (56 characters, starts with `G`).
-
-### Environment Variables
-
-No additional environment variables are required for the onramp page. Exchange rates are fetched from CoinGecko on the client.
-
-### Supported Currencies & Assets
-
-- Fiat: NGN, KES, GHS, ZAR, UGX
-- Crypto: cNGN, cKES, cGHS, USDC, XLM
-
-### Payment Methods & Fees
-
-- Bank Transfer: 0% processing fee
-- Card Payment: 1.5% processing fee
-- Mobile Money: 0.5% processing fee
-
-### Known Limitations
-
-- Wallet switching is a client-only selector and does not yet integrate with Freighter accounts.
-- Exchange rates are best-effort with cached fallbacks on API failure.
+Make sure `.env.local` sets `NEXT_API_URL` to your backend's URL (there is no default) and that the backend's `CORS_ALLOWED_ORIGINS` includes your frontend origin (`http://localhost:3001` by default). See `.env.example` for details.
 
 ---
 
-## 🧪 Testing & Quality
+## 📦 Available Scripts
 
-- **Run Unit Tests:** Execute `npm test` to launch the test runner.
-- **Code Linting:** Use `npm run lint` to check code style and catch errors.
-- **Build for Production:** Run `npm run build` to create an optimized production build in the `build/` folder.
-
----
-
-## 🤝 How to Contribute
-
-We welcome contributions from the community! To ensure a smooth process, please follow these guidelines.
-
-### Contribution Workflow
-
-1.  **Fork the Repository**: Start by forking the main AFRAMP repository to your own GitHub account.
-2.  **Create a Feature Branch**: In your fork, create a new branch for your work (e.g., `feat/add-new-component` or `fix/transaction-bug`).
-3.  **Implement Your Changes**: Write clear, well-commented code. Ensure your changes align with the project's architecture, which integrates with Stellar's ecosystem protocols (SEPs) for ramps and authentication.
-4.  **Test Thoroughly**: Verify your changes work correctly and don't break existing functionality.
-5.  **Submit a Pull Request (PR)**: Push your branch to your fork and open a PR against the main repository's `develop` or `main` branch. Clearly describe the problem and your solution.
-
-### Pull Request Requirements
-
-- **Title & Description**: Use a clear title and provide a detailed description of the changes.
-- **Linked Issue**: Reference any related GitHub issue.
-- **Code Quality**: Code must pass linting checks and existing tests.
-- **Screenshots**: For UI changes, include before/after screenshots or screen recordings.
-
-### Community & Conduct
-
-We strive to maintain a respectful and inclusive environment. Please be constructive in discussions and reviews. Major feature proposals are best discussed by opening an issue first.
-
----
-
-## 📚 Helpful Links & Resources
-
-- **Stellar Documentation**: The foundation of our platform.
-  - [Stellar Ecosystem Proposals (SEPs)](#)
-  - [Anchor Platform Guide](#)
-- **AFRAMP Backend Repository**: [Link to backend service repo]
-- **Live Application**: [https://app.aframp.com](https://aframp.vercel.app/)
-- **Verification Portal**: [https://verify.aframp.com](#) _(Live transaction explorer)_
-- **Open an Issue**: Use GitHub Issues to report bugs or request features.
-
----
-
-## 📄 License
-
-This project is licensed under the **Apache 2.0 License**. By contributing, you agree that your contributions will be licensed under the same license.
-
----
+| Command | Description |
+| ------- | ----------- |
 
 _Built for Africa, Verified by Blockchain. Onramp to the future. Offramp to opportunity._ 🔗🌍
+
+## Handsoff notes
