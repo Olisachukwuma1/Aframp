@@ -1,60 +1,126 @@
 version: 2
 updates:
-  - package-ecosystem: "npm"
-    directory: "/"
-    target-branch: "dev"
+  - package-ecosystem: 'npm'
+    directory: '/'
+    target-branch: 'dev'
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Africa/Lagos"
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'Africa/Lagos'
     open-pull-requests-limit: 10
     labels:
-      - "dependencies"
-      - "security"
+      - 'dependencies'
+      - 'security'
     assignees:
-      - "kellymusk"
+      - 'kellymusk'
     commit-message:
-      prefix: "fix"
-      prefix-development: "chore"
-      include: "scope"
+      prefix: 'fix'
+      prefix-development: 'chore'
+      include: 'scope'
     groups:
       stellar:
         patterns:
-          - "@stellar/*"
+          - '@stellar/*'
         update-types:
-          - "minor"
-          - "patch"
+          - 'minor'
+          - 'patch'
       react:
         patterns:
-          - "react"
-          - "react-dom"
-          - "@types/react"
-          - "@types/react-dom"
+          - 'react'
+          - 'react-dom'
+          - '@types/react'
+          - '@types/react-dom'
         update-types:
-          - "minor"
-          - "patch"
+          - 'minor'
+          - 'patch'
       radix:
         patterns:
-          - "@radix-ui/*"
+          - '@radix-ui/*'
         update-types:
-          - "minor"
-          - "patch"
+          - 'minor'
+          - 'patch'
     ignore:
-      - dependency-name: "@nuxt/kit"
-      - dependency-name: "next"
-        update-types: ["version-update:semver-major"]
+      - dependency-name: '@nuxt/kit'
+      - dependency-name: 'next'
+        update-types: ['version-update:semver-major']
     allow:
-      - dependency-type: "direct"
-      - dependency-type: "indirect"
+      - dependency-type: 'direct'
+      - dependency-type: 'indirect'
 
-  - package-ecosystem: "docker"
-    directory: "/"
+  - package-ecosystem: 'npm'
+    directory: '/'
+    target-branch: 'dev-frontend'
     schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Africa/Lagos"
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'Africa/Lagos'
+    open-pull-requests-limit: 10
     labels:
-      - "docker"
-      - "security"
+      - 'dependencies'
+      - 'security'
+    assignees:
+      - 'kellymusk'
+    commit-message:
+      prefix: 'fix'
+      prefix-development: 'chore'
+      include: 'scope'
+    groups:
+      stellar:
+        patterns:
+          - '@stellar/*'
+        update-types:
+          - 'minor'
+          - 'patch'
+      react:
+        patterns:
+          - 'react'
+          - 'react-dom'
+          - '@types/react'
+          - '@types/react-dom'
+        update-types:
+          - 'minor'
+          - 'patch'
+      radix:
+        patterns:
+          - '@radix-ui/*'
+        update-types:
+          - 'minor'
+          - 'patch'
+    ignore:
+      - dependency-name: '@nuxt/kit'
+      - dependency-name: 'next'
+        update-types: ['version-update:semver-major']
+    allow:
+      - dependency-type: 'direct'
+      - dependency-type: 'indirect'
+
+  - package-ecosystem: 'docker'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'Africa/Lagos'
+    labels:
+      - 'docker'
+      - 'security'
+
+  # Keeps the commit-SHA pins on every `uses:` line in .github/workflows
+  # current. Dependabot understands `@<sha> # vX.Y.Z` and bumps both the SHA
+  # and the trailing version comment.
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      day: 'monday'
+      time: '09:00'
+      timezone: 'Africa/Lagos'
+    labels:
+      - 'github-actions'
+      - 'security'
+    groups:
+      github-actions:
+        patterns:
+          - '*'

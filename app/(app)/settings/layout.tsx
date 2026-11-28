@@ -2,12 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { KeyRound, UserCircle } from 'lucide-react'
+import { KeyRound, ScrollText, UserCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const SETTINGS_LINKS = [
   { label: 'Profile', icon: UserCircle, href: '/settings' },
   { label: 'API Keys', icon: KeyRound, href: '/settings/api-keys' },
+  { label: 'Audit log', icon: ScrollText, href: '/settings/audit-log' },
 ]
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
@@ -22,7 +23,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
       <div className="flex flex-col gap-6 lg:flex-row">
         <aside className="shrink-0 lg:w-48">
-          <nav className="space-y-1">
+          <nav aria-label="Settings" className="space-y-1">
             {SETTINGS_LINKS.map(({ label, icon: Icon, href }) => {
               const active = pathname === href || pathname.startsWith(`${href}/`)
               return (
@@ -45,7 +46,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
           </nav>
         </aside>
 
-        <main className="min-w-0 flex-1">{children}</main>
+        <div className="min-w-0 flex-1">{children}</div>
       </div>
     </div>
   )

@@ -1,92 +1,219 @@
 import { Suspense } from 'react'
-import { act, render, screen } from '@testing-library/react'
-import { api } from '@/lib/api'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import PaymentRequestPage from '../page'
+import { api, ApiError, type PaymentRequest } from '@/lib/api'
 
-jest.mock('@/lib/api', () => {
-  class ApiError extends Error {
+const POLL_INTERVAL_MS = 3000
+
+jest.mock('@/lib/api', () => ({
+  api: {
+    getPaymentRequest: jest.fn(),
+  },
+  ApiError: class extends Error {
     constructor(
       message: string,
-      readonly status: number
+      public status: number
     ) {
       super(message)
       this.name = 'ApiError'
     }
-  }
-  return {
-    api: { getPaymentRequest: jest.fn() },
-    ApiError,
-  }
-})
+  },
+}))
 
-jest.mock('react-qr-code', () => {
-  const React = jest.requireActual('react')
-  return {
-    __esModule: true,
-    default: ({ value }: { value: string }) =>
-      React.createElement('svg', { 'data-testid': 'sep7-qr', 'data-value': value }),
-  }
-})
+jest.mock('react-qr-code', () => ({
+  __esModule: true,
+  default: ({ value }: { value: string }) => <div data-testid="qr-code">{value}</div>,
+}))
 
 const mockGetPaymentRequest = api.getPaymentRequest as jest.Mock
 
-function cngnRequest(sep7Uri: string | null) {
+function pendingRequest(overrides: Partial<PaymentRequest> = {}): PaymentRequest {
   return {
-    id: 'req-1',
-    merchant_id: 'm',
-    address: 'GABCDEF',
+    id: 'req_123',
+    merchant_id: 'merchant-1',
+    address: 'GTEST123',
     network: 'stellar',
-    amount_stroops: 500_000_000n,
-    asset: 'cNGN',
-    memo: 'REF-1',
+    amount_stroops: 25000000n,
+    asset: 'XLM',
+    memo: 'memo',
     status: 'pending',
-    allow_partial: false,
     expires_at: new Date(Date.now() + 600_000).toISOString(),
-    created_at: '',
-    sep7_uri: sep7Uri,
+    created_at: new Date().toISOString(),
+    sep7_uri: 'web+stellar:pay?destination=GTEST123&amount=2.5',
+    ...overrides,
   }
 }
 
-describe('PaymentRequestPage', () => {
+const networkError = () => new ApiError('offline', 0)
+
+/** The page unwraps `params` with React's use(), which suspends on first render. */
+async function renderPage() {
+  await act(async () => {
+    render(
+      <Suspense fallback={null}>
+        <PaymentRequestPage params={Promise.resolve({ id: 'req_123' })} />
+      </Suspense>
+    )
+    await Promise.resolve()
+  })
+}
+
+async function advance(ms: number) {
+  await act(async () => {
+    jest.advanceTimersByTime(ms)
+    await Promise.resolve()
+  })
+}
+
+describe('PaymentRequestPage merchant name', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    jest.useFakeTimers()
+    mockGetPaymentRequest.mockReset()
   })
 
-  it('renders a scannable code from the backend SEP-7 URI for cNGN', async () => {
-    const params = Promise.resolve({ id: 'req-1' })
-    const sep7Uri = 'stellar:GABCDEF?amount=50&asset=cNGN_CNYZZ&memo=REF-1'
-    mockGetPaymentRequest.mockResolvedValue(cngnRequest(sep7Uri))
-
-    await act(async () => {
-      render(
-        <Suspense fallback={null}>
-          <PaymentRequestPage params={params} />
-        </Suspense>
-      )
-      await Promise.resolve()
-    })
-
-    const qr = await screen.findByTestId('sep7-qr')
-    expect(qr).toHaveAttribute('data-value', sep7Uri)
-    expect(screen.getByText('50 cNGN')).toBeInTheDocument()
+  afterEach(() => {
+    jest.useRealTimers()
   })
 
-  it('falls back to address and memo when the backend has no SEP-7 URI', async () => {
-    const params = Promise.resolve({ id: 'req-1' })
-    mockGetPaymentRequest.mockResolvedValue(cngnRequest(null))
+  it('shows which merchant is being paid', async () => {
+    mockGetPaymentRequest.mockResolvedValue(pendingRequest({ merchant_name: 'Ada Stores' }))
+    await renderPage()
 
+    expect(screen.getByText('Paying Ada Stores')).toBeInTheDocument()
+  })
+
+  it('omits the merchant line when the backend sends no name', async () => {
+    mockGetPaymentRequest.mockResolvedValue(pendingRequest({ merchant_name: null }))
+    await renderPage()
+
+    expect(screen.queryByText(/^Paying /)).not.toBeInTheDocument()
+  })
+})
+
+describe('PaymentRequestPage polling', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockGetPaymentRequest.mockReset()
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  it('stops polling after 3 consecutive network errors and shows a retry button', async () => {
+    mockGetPaymentRequest.mockRejectedValue(networkError())
+
+    await renderPage()
+    await advance(POLL_INTERVAL_MS)
+    await advance(POLL_INTERVAL_MS)
+
+    expect(mockGetPaymentRequest).toHaveBeenCalledTimes(3)
+
+    // Polling has stopped: no further calls even after more intervals.
+    await advance(POLL_INTERVAL_MS * 5)
+    expect(mockGetPaymentRequest).toHaveBeenCalledTimes(3)
+
+    expect(screen.getByRole('button', { name: /try again|retry/i })).toBeInTheDocument()
+  })
+
+  it('resets the error counter after a successful load', async () => {
+    mockGetPaymentRequest
+      .mockRejectedValueOnce(networkError())
+      .mockRejectedValueOnce(networkError())
+      .mockResolvedValueOnce(pendingRequest())
+      .mockRejectedValueOnce(networkError())
+      .mockRejectedValueOnce(networkError())
+      .mockResolvedValue(pendingRequest())
+
+    await renderPage()
+    for (let i = 0; i < 5; i++) await advance(POLL_INTERVAL_MS)
+
+    // Two failures, a success, two more failures, then success: never three in a row,
+    // so polling is still running.
+    expect(mockGetPaymentRequest).toHaveBeenCalledTimes(6)
+    await advance(POLL_INTERVAL_MS)
+    expect(mockGetPaymentRequest).toHaveBeenCalledTimes(7)
+  })
+
+  it('stops polling once the request is paid', async () => {
+    mockGetPaymentRequest
+      .mockResolvedValueOnce(pendingRequest())
+      .mockResolvedValue(pendingRequest({ status: 'paid' }))
+
+    await renderPage()
+    await advance(POLL_INTERVAL_MS)
+    expect(mockGetPaymentRequest).toHaveBeenCalledTimes(2)
+
+    await advance(POLL_INTERVAL_MS * 5)
+    expect(mockGetPaymentRequest).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('PaymentRequestPage share link', () => {
+  const writeText = jest.fn()
+  const share = jest.fn()
+
+  beforeEach(() => {
+    jest.useFakeTimers()
+    mockGetPaymentRequest.mockReset().mockResolvedValue(pendingRequest())
+    writeText.mockReset().mockResolvedValue(undefined)
+    share.mockReset().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  })
+
+  afterEach(() => {
+    delete (navigator as { share?: unknown }).share
+    jest.useRealTimers()
+  })
+
+  async function click(name: RegExp) {
     await act(async () => {
-      render(
-        <Suspense fallback={null}>
-          <PaymentRequestPage params={params} />
-        </Suspense>
-      )
+      fireEvent.click(screen.getByRole('button', { name }))
       await Promise.resolve()
     })
+  }
 
-    expect(await screen.findByText(/No scannable code for cNGN yet/)).toBeInTheDocument()
-    expect(screen.queryByTestId('sep7-qr')).not.toBeInTheDocument()
-    expect(screen.getByText('GABCDEF')).toBeInTheDocument()
-    expect(screen.getByText('REF-1')).toBeInTheDocument()
+  it('copies the page URL and resets the label after two seconds', async () => {
+    await renderPage()
+    await click(/copy payment link/i)
+
+    expect(writeText).toHaveBeenCalledWith(window.location.href)
+    expect(screen.getByRole('button', { name: /payment link copied/i })).toBeInTheDocument()
+
+    await advance(2000)
+    expect(screen.getByRole('button', { name: /copy payment link/i })).toBeInTheDocument()
+  })
+
+  it('keeps the copy label when the clipboard is blocked', async () => {
+    writeText.mockRejectedValue(new Error('denied'))
+    await renderPage()
+    await click(/copy payment link/i)
+
+    expect(screen.getByRole('button', { name: /copy payment link/i })).toBeInTheDocument()
+  })
+
+  it('hides Share when the browser has no share sheet', async () => {
+    await renderPage()
+    expect(screen.queryByRole('button', { name: /^share$/i })).not.toBeInTheDocument()
+  })
+
+  it('opens the share sheet with the amount and page URL', async () => {
+    Object.defineProperty(navigator, 'share', { value: share, configurable: true })
+    await renderPage()
+    await click(/^share$/i)
+
+    expect(share).toHaveBeenCalledWith({
+      title: expect.stringContaining('2.5'),
+      url: window.location.href,
+    })
+  })
+
+  it('ignores a dismissed share sheet', async () => {
+    share.mockRejectedValue(new DOMException('cancelled', 'AbortError'))
+    Object.defineProperty(navigator, 'share', { value: share, configurable: true })
+    await renderPage()
+    await click(/^share$/i)
+
+    expect(screen.getByRole('button', { name: /^share$/i })).toBeInTheDocument()
   })
 })

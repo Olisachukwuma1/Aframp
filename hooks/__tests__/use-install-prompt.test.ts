@@ -1,88 +1,85 @@
-import { renderHook, act } from '@testing-library/react'
-import {
-  useInstallPrompt,
-  VISIT_COUNT_KEY,
-  DISMISSED_KEY,
-  DISMISS_COOLDOWN_MS,
-} from '../use-install-prompt'
+import { act, renderHook } from '@testing-library/react'
 
-function fireInstallEvent(outcome: 'accepted' | 'dismissed' = 'accepted') {
-  const e = new Event('beforeinstallprompt', { cancelable: true }) as any
-  e.prompt = jest.fn().mockResolvedValue(undefined)
-  e.userChoice = Promise.resolve({ outcome })
-  act(() => {
-    window.dispatchEvent(e)
-  })
-  return e
+import { useInstallPrompt } from '@/hooks/use-install-prompt'
+
+const ANDROID_CHROME_UA =
+  'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0 Mobile Safari/537.36'
+const IOS_SAFARI_UA =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+
+function mockUserAgent(ua: string) {
+  Object.defineProperty(window.navigator, 'userAgent', { value: ua, configurable: true })
 }
 
-beforeEach(() => {
-  localStorage.clear()
-  sessionStorage.clear()
-  window.matchMedia = jest.fn().mockReturnValue({ matches: false }) as any
-})
+function mockMatchMedia(matches: boolean) {
+  window.matchMedia = jest.fn().mockReturnValue({ matches }) as unknown as typeof window.matchMedia
+}
+
+function fireBeforeInstallPrompt() {
+  const event = Object.assign(new Event('beforeinstallprompt'), {
+    prompt: jest.fn(),
+    userChoice: Promise.resolve({ outcome: 'accepted' as const }),
+  })
+  act(() => {
+    window.dispatchEvent(event)
+  })
+}
 
 describe('useInstallPrompt', () => {
-  it('does not offer install on the first visit', () => {
-    const { result } = renderHook(() => useInstallPrompt())
-    fireInstallEvent()
-    expect(localStorage.getItem(VISIT_COUNT_KEY)).toBe('1')
-    expect(result.current.canInstall).toBe(false)
+  beforeEach(() => {
+    window.localStorage.clear()
+    mockMatchMedia(false)
+    mockUserAgent(ANDROID_CHROME_UA)
   })
 
-  it('offers install from the second visit', () => {
-    localStorage.setItem(VISIT_COUNT_KEY, '1')
+  it('is not eligible on the first visit even after the event fires', () => {
     const { result } = renderHook(() => useInstallPrompt())
-    fireInstallEvent()
-    expect(result.current.canInstall).toBe(true)
+
+    fireBeforeInstallPrompt()
+
+    expect(result.current.eligible).toBe(false)
   })
 
-  it('counts a visit once per session', () => {
+  it('becomes eligible for android once the event fires on the second visit', () => {
     renderHook(() => useInstallPrompt())
+    const { result } = renderHook(() => useInstallPrompt())
+
+    fireBeforeInstallPrompt()
+
+    expect(result.current.eligible).toBe(true)
+    expect(result.current.platform).toBe('android')
+  })
+
+  it('is eligible for iOS Safari on the second visit without a captured event', () => {
+    mockUserAgent(IOS_SAFARI_UA)
     renderHook(() => useInstallPrompt())
-    expect(localStorage.getItem(VISIT_COUNT_KEY)).toBe('1')
-  })
-
-  it('is hidden when recently dismissed, shown again after cooldown', () => {
-    localStorage.setItem(VISIT_COUNT_KEY, '5')
-    localStorage.setItem(DISMISSED_KEY, String(Date.now()))
-    const a = renderHook(() => useInstallPrompt())
-    fireInstallEvent()
-    expect(a.result.current.canInstall).toBe(false)
-    a.unmount()
-
-    sessionStorage.clear()
-    localStorage.setItem(DISMISSED_KEY, String(Date.now() - DISMISS_COOLDOWN_MS - 1))
-    const b = renderHook(() => useInstallPrompt())
-    fireInstallEvent()
-    expect(b.result.current.canInstall).toBe(true)
-  })
-
-  it('never offers when already installed (standalone)', () => {
-    localStorage.setItem(VISIT_COUNT_KEY, '5')
-    window.matchMedia = jest.fn().mockReturnValue({ matches: true }) as any
     const { result } = renderHook(() => useInstallPrompt())
-    fireInstallEvent()
-    expect(result.current.canInstall).toBe(false)
+
+    expect(result.current.eligible).toBe(true)
+    expect(result.current.platform).toBe('ios')
   })
 
-  it('install() triggers the native prompt and hides the banner', async () => {
-    localStorage.setItem(VISIT_COUNT_KEY, '2')
-    const { result } = renderHook(() => useInstallPrompt())
-    const e = fireInstallEvent('accepted')
-    await act(async () => {
-      await result.current.install()
+  it('stays dismissed on later visits after dismiss() is called', () => {
+    renderHook(() => useInstallPrompt())
+    const second = renderHook(() => useInstallPrompt())
+    fireBeforeInstallPrompt()
+    act(() => {
+      second.result.current.dismiss()
     })
-    expect(e.prompt).toHaveBeenCalled()
-    expect(result.current.canInstall).toBe(false)
+
+    const third = renderHook(() => useInstallPrompt())
+    fireBeforeInstallPrompt()
+
+    expect(third.result.current.eligible).toBe(false)
   })
 
-  it('dismiss() persists and hides', () => {
-    localStorage.setItem(VISIT_COUNT_KEY, '2')
+  it('never becomes eligible when already running standalone', () => {
+    mockMatchMedia(true)
+    renderHook(() => useInstallPrompt())
     const { result } = renderHook(() => useInstallPrompt())
-    fireInstallEvent()
-    act(() => result.current.dismiss())
-    expect(result.current.canInstall).toBe(false)
-    expect(localStorage.getItem(DISMISSED_KEY)).toBeTruthy()
+
+    fireBeforeInstallPrompt()
+
+    expect(result.current.eligible).toBe(false)
   })
 })

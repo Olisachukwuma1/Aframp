@@ -1,28 +1,42 @@
-/**
- * Stellar network configuration helpers.
- *
- * Uses NEXT_PUBLIC_STELLAR_NETWORK to determine whether the app is pointing at
- * testnet or public (mainnet). Defaults to "testnet" so development and staging
- * environments never accidentally link to mainnet transactions.
- */
+export type StellarNetwork = 'PUBLIC' | 'MAINNET' | 'TESTNET' | 'FUTURENET'
 
-type StellarNetwork = 'testnet' | 'public'
-
-function getStellarNetwork(): StellarNetwork {
-  const env = process.env.NEXT_PUBLIC_STELLAR_NETWORK
-  if (env === 'public') return 'public'
-  return 'testnet'
-}
-
-const EXPLORER_ROOTS: Record<StellarNetwork, string> = {
-  testnet: 'https://stellar.expert/explorer/testnet/tx',
-  public: 'https://stellar.expert/explorer/public/tx',
-}
+const RAW_NETWORK = (process.env.NEXT_PUBLIC_STELLAR_NETWORK ?? '').trim().toUpperCase()
 
 /**
- * Returns the full stellar.expert URL for a transaction hash, honoring
- * NEXT_PUBLIC_STELLAR_NETWORK. Defaults to testnet when the variable is unset.
+ * Normalized Stellar network for the current build.
+ * CI sets `MAINNET` for mainnet builds, while other tooling may use `PUBLIC`.
+ * Both are treated as mainnet here.
  */
-export function getTransactionExplorerUrl(txHash: string): string {
-  return `${EXPLORER_ROOTS[getStellarNetwork()]}/${txHash}`
+export const STELLAR_NETWORK: StellarNetwork =
+  RAW_NETWORK === 'PUBLIC' || RAW_NETWORK === 'MAINNET'
+    ? 'MAINNET'
+    : RAW_NETWORK === 'FUTURENET'
+      ? 'FUTURENET'
+      : 'TESTNET'
+
+/** True when the build targets Stellar mainnet (accepts `MAINNET` or `PUBLIC`). */
+export function isMainnet(): boolean {
+  return STELLAR_NETWORK === 'MAINNET'
+}
+
+/** stellar.expert explorer path segment for the current network. */
+export function getExplorerNetworkPath(): string {
+  switch (STELLAR_NETWORK) {
+    case 'MAINNET':
+      return 'public'
+    case 'FUTURENET':
+      return 'futurenet'
+    default:
+      return 'testnet'
+  }
+}
+
+/** Base URL of the stellar.expert explorer for the current network. */
+export function getExplorerBaseUrl(): string {
+  return `https://stellar.expert/explorer/${getExplorerNetworkPath()}`
+}
+
+/** Build a stellar.expert explorer URL for a transaction hash on the current network. */
+export function getTransactionExplorerUrl(hash: string): string {
+  return `${getExplorerBaseUrl()}/tx/${hash}`
 }

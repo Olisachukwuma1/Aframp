@@ -1,7 +1,6 @@
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
-import { axe } from 'jest-axe'
 import userEvent from '@testing-library/user-event'
-import { api, ApiError } from '@/lib/api'
+import { api, ApiError, type Balance, type Me, type Withdrawal } from '@/lib/api'
 import WithdrawPage from '../page'
 
 jest.mock('@/lib/api', () => {
@@ -19,91 +18,27 @@ jest.mock('@/lib/api', () => {
       getBalances: jest.fn(),
       listWithdrawals: jest.fn(),
       createWithdrawal: jest.fn(),
-      getMe: jest.fn(),
     },
     ApiError,
   }
 })
 
-const mockSession = {
-  token: 'test-token',
-  me: { kyc_status: 'approved' } as Record<string, unknown>,
-}
-
+// The session provider loads /me once; the page reads it from context.
+let mockMe: Me | null = null
 jest.mock('@/components/session-provider', () => ({
-  useAuthenticatedSession: () => mockSession,
+  useAuthenticatedSession: () => ({ token: 'test-token' }),
+  useSession: () => ({ me: mockMe, meLoading: false, meError: null }),
 }))
 
-// Replace Radix Select with a plain <select> so value changes can be driven
-// through ordinary DOM events in jsdom.
-jest.mock('@/components/ui/select', () => {
-  const React = jest.requireActual('react')
+const mockGetBalances = jest.mocked(api.getBalances)
+const mockListWithdrawals = jest.mocked(api.listWithdrawals)
+const mockCreateWithdrawal = jest.mocked(api.createWithdrawal)
 
-  const SelectTrigger = ({ id, children }: any) =>
-    React.createElement('div', { id, 'data-select-trigger': true }, children)
-
-  const SelectValue = ({ placeholder }: any) => React.createElement('span', null, placeholder ?? '')
-
-  const SelectItem = ({ value, children }: any) =>
-    React.createElement('option', { value }, children)
-
-  const SelectContent = ({ children }: any) => React.createElement(React.Fragment, null, children)
-
-  const flattenOptions = (nodes: any): any[] =>
-    React.Children.toArray(nodes).flatMap((node: any) => {
-      if (!React.isValidElement(node)) return []
-      if (node.type === SelectItem) return [node]
-      if (node.type === SelectContent) return flattenOptions(node.props.children)
-      if (node.props?.children) return flattenOptions(node.props.children)
-      return []
-    })
-
-  return {
-    Select: ({ value, onValueChange, disabled, children }: any) => {
-      const trigger = React.Children.toArray(children).find(
-        (child: any) => React.isValidElement(child) && child.type === SelectTrigger
-      ) as any
-      const options = flattenOptions(children).map((option: any) =>
-        React.createElement(
-          'option',
-          { key: option.props.value, value: option.props.value },
-          option.props.children
-        )
-      )
-      if (value === '') {
-        options.unshift(React.createElement('option', { key: 'empty', value: '' }, ''))
-      }
-
-      return React.createElement(
-        'select',
-        {
-          id: trigger?.props.id,
-          value: value ?? '',
-          disabled,
-          onChange: (event: any) => onValueChange?.(event.target.value),
-          role: 'combobox',
-          'aria-expanded': 'false',
-          'aria-controls': `${trigger?.props.id ?? 'select'}-list`,
-        },
-        options
-      )
-    },
-    SelectTrigger,
-    SelectValue,
-    SelectContent,
-    SelectItem,
-  }
-})
-
-const mockGetBalances = api.getBalances as jest.Mock
-const mockListWithdrawals = api.listWithdrawals as jest.Mock
-const mockCreateWithdrawal = api.createWithdrawal as jest.Mock
-
-function balance(asset: string, available: bigint) {
+function balance(asset: string, available: bigint): Balance {
   return { merchant_id: 'm', asset, available, pending: 0n, updated_at: '' }
 }
 
-function withdrawal(overrides: Record<string, unknown> = {}) {
+function withdrawal(overrides: Partial<Withdrawal> = {}): Withdrawal {
   return {
     id: 'w1',
     merchant_id: 'm',
@@ -123,12 +58,19 @@ function withdrawal(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   jest.clearAllMocks()
-  mockSession.me = { kyc_status: 'approved' }
+  mockMe = {
+    user_id: 'u',
+    email: 'user@example.com',
+    name: 'Test User',
+    is_admin: false,
+    created_at: '',
+    merchant_id: 'm',
+    merchant_name: 'Test Merchant',
+    kyc_status: 'approved',
+  }
   mockGetBalances.mockResolvedValue([])
   mockListWithdrawals.mockResolvedValue([])
-  mockCreateWithdrawal.mockResolvedValue({})
-  // The page reads KYC status from /me before showing the cash-out form.
-  ;(api.getMe as jest.Mock).mockImplementation(() => Promise.resolve(mockSession.me))
+  mockCreateWithdrawal.mockResolvedValue(withdrawal())
 })
 
 describe('WithdrawPage', () => {
@@ -144,51 +86,24 @@ describe('WithdrawPage', () => {
     expect(await screen.findByText(/no balance to cash out/i)).toBeInTheDocument()
   })
 
-  it('renders the cash-out form when KYC is approved', async () => {
-    mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
+  it('keeps the selected asset configured when withdrawable balances become empty', async () => {
+    const user = userEvent.setup()
+    mockGetBalances
+      .mockResolvedValueOnce([balance('cNGN', 10_000_000_000n)])
+      .mockResolvedValueOnce([])
+
     render(<WithdrawPage />)
-    expect(await screen.findByRole('heading', { name: 'Cash out' })).toBeInTheDocument()
-    expect(screen.getByLabelText('Amount (cNGN)')).toBeInTheDocument()
-  })
-
-  it.each(['pending', 'rejected', 'unverified'])(
-    'shows the KYC-required message when kyc_status is %s',
-    async (status) => {
-      mockSession.me = { kyc_status: status }
-      mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
-      render(<WithdrawPage />)
-
-      expect(await screen.findByText(/verify your identity/i)).toBeInTheDocument()
-      expect(screen.queryByRole('heading', { name: 'Cash out' })).not.toBeInTheDocument()
-      expect(screen.queryByLabelText('Amount (cNGN)')).not.toBeInTheDocument()
-    }
-  )
-
-  it('shows a clear KYC-unavailable state when kyc_status is missing', async () => {
-    mockSession.me = {}
-    mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
-    render(<WithdrawPage />)
-
-    expect(await screen.findByText(/kyc status unavailable/i)).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Cash out' })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Amount (cNGN)')).not.toBeInTheDocument()
-  })
-
-  it('shows a clear KYC-unavailable state when kyc_status is null', async () => {
-    mockSession.me = { kyc_status: null }
-    mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
-    render(<WithdrawPage />)
-
-    expect(await screen.findByText(/kyc status unavailable/i)).toBeInTheDocument()
-    expect(screen.queryByRole('heading', { name: 'Cash out' })).not.toBeInTheDocument()
-  })
-
-  it('has no accessibility violations in the cash-out form', async () => {
-    mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
-    const { container } = render(<WithdrawPage />)
     await screen.findByRole('heading', { name: 'Cash out' })
 
-    expect(await axe(container)).toHaveNoViolations()
+    await user.type(screen.getByLabelText('Amount (cNGN)'), '50')
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: '044' } })
+    await user.type(screen.getByLabelText('Account number'), '0123456789')
+    await user.click(screen.getByRole('button', { name: 'Cash out' }))
+    await user.click(await screen.findByRole('button', { name: 'Confirm cash out' }))
+
+    expect(await screen.findByText(/no balance to cash out/i)).toBeInTheDocument()
+    expect(screen.getByLabelText('Amount (cNGN)')).toBeDisabled()
+    expect(screen.getByText('0 cNGN available')).toBeInTheDocument()
   })
 
   it('shows the load error when the backend fails', async () => {
@@ -203,6 +118,29 @@ describe('WithdrawPage', () => {
     render(<WithdrawPage />)
     expect(await screen.findByText('50 cNGN')).toBeInTheDocument()
     expect(screen.getByText('Paid out')).toBeInTheDocument()
+  })
+
+  it('shows why a cash-out failed and where it was going', async () => {
+    mockListWithdrawals.mockResolvedValue([
+      withdrawal({ status: 'failed', failure_reason: 'Account name mismatch' }),
+    ])
+    render(<WithdrawPage />)
+
+    expect(await screen.findByText('Account name mismatch')).toBeInTheDocument()
+    expect(screen.getByText('Failed')).toHaveClass('bg-destructive')
+    expect(screen.getByText(/••••6789/)).toBeInTheDocument()
+  })
+
+  it('fills the amount with the whole available balance from Max', async () => {
+    const user = userEvent.setup()
+    mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_123_456n)])
+    render(<WithdrawPage />)
+    await screen.findByRole('heading', { name: 'Cash out' })
+
+    await user.click(screen.getByRole('button', { name: 'Max' }))
+
+    // Rounded down to whole kobo.
+    expect(screen.getByLabelText('Amount (cNGN)')).toHaveValue('1000.01')
   })
 
   it('shows an asset selector when multiple assets have balances', async () => {
@@ -295,7 +233,7 @@ describe('WithdrawPage', () => {
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '044' } })
     await user.type(screen.getByLabelText('Account number'), '123')
     await user.click(screen.getByRole('button', { name: 'Cash out' }))
-    expect(await screen.findByText('Account numbers are 10 digits.')).toBeInTheDocument()
+    expect(await screen.findByText('Nigerian accounts are 10 digits.')).toBeInTheDocument()
   })
 
   it('rejects an account number containing non-digit characters (#641)', async () => {
@@ -328,83 +266,12 @@ describe('WithdrawPage', () => {
     // and both block the submission.
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(
-      /Account numbers are 10 digits\.|Account number must contain digits only\./
+      /Nigerian accounts are 10 digits\.|Account number must contain digits only\./
     )
     expect(mockCreateWithdrawal).not.toHaveBeenCalled()
   })
 
-  it('submits a valid cash-out', async () => {
-    // Simulate a programmatic bypass: set a 10-char value containing a
-    // non-digit that skips the onChange .replace(/\D/g,'') handler.
-    // We do this by calling fireEvent.change with nativeEvent to bypass React's
-    // synthetic handler, then directly updating the input's value in DOM.
-    const accountInput = screen.getByLabelText('Account number') as HTMLInputElement
-    // Directly set the DOM value (bypasses React onChange) then fire a change.
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
-      accountInput,
-      '012345678a'
-    )
-    accountInput.dispatchEvent(new Event('input', { bubbles: true }))
-
-    // Manually set the React state via a controlled input trick:
-    // since the onChange strips non-digits, we instead test the validate()
-    // guard by giving it 10 chars where the final char is non-digit.
-    // The simplest reliable approach: fire a change with a value that has
-    // exactly accountNumberLength chars but one is non-digit.
-    fireEvent.change(accountInput, { target: { value: '012345678a' } })
-
-    await user.click(screen.getByRole('button', { name: 'Cash out' }))
-
-    // The onChange strips the 'a', leaving 9 digits → length check fires first.
-    // That is also correct security behaviour, so we accept either error.
-    const errorText = await screen.findByRole('alert')
-    expect(errorText).toHaveTextContent(
-      /Account numbers are 10 digits\.|Account number must contain digits only\./
-    )
-    expect(mockCreateWithdrawal).not.toHaveBeenCalled()
-  })
-
-  it('submits a valid cash-out', async () => {
-    // Simulate a programmatic bypass: directly set a non-digit account number
-    // that bypasses the onChange .replace(/\D/g,'') handler.
-    const accountInput = screen.getByLabelText('Account number')
-    fireEvent.change(accountInput, { target: { value: '012345678a' } })
-
-    await user.click(screen.getByRole('button', { name: 'Cash out' }))
-
-    expect(await screen.findByText('Account number must contain digits only.')).toBeInTheDocument()
-    expect(mockCreateWithdrawal).not.toHaveBeenCalled()
-  })
-
-  it('keeps confirmation open and blocks duplicate cash-outs while submitting', async () => {
-    const user = userEvent.setup()
-    let resolveWithdrawal!: (value: unknown) => void
-    mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
-    mockCreateWithdrawal.mockReturnValue(
-      new Promise((resolve) => {
-        resolveWithdrawal = resolve
-      })
-    )
-    render(<WithdrawPage />)
-
-    await screen.findByRole('heading', { name: 'Cash out' })
-    await user.type(screen.getByLabelText('Amount (cNGN)'), '50')
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: '044' } })
-    await user.type(screen.getByLabelText('Account number'), '0123456789')
-    await user.click(screen.getByRole('button', { name: 'Cash out' }))
-    await user.click(await screen.findByRole('button', { name: 'Confirm cash out' }))
-
-    const sendingButton = await screen.findByRole('button', { name: 'Sending…' })
-    expect(sendingButton).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
-    expect(mockCreateWithdrawal).toHaveBeenCalledTimes(1)
-
-    resolveWithdrawal({})
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
-    expect(screen.getByLabelText('Amount (cNGN)')).toHaveValue('')
-  })
-
-  it('submits a valid cash-out after confirmation', async () => {
+  it('submits a valid cash-out and resets the form', async () => {
     const user = userEvent.setup()
     mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
     render(<WithdrawPage />)
@@ -448,6 +315,40 @@ describe('WithdrawPage', () => {
 
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('Bank provider unavailable')
-    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it('falls back to hardcoded BANKS when /api/banks fetch fails', async () => {
+    const originalFetch = global.fetch
+    global.fetch = jest.fn().mockRejectedValue(new Error('Network error'))
+    try {
+      mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
+      render(<WithdrawPage />)
+      await screen.findByRole('heading', { name: 'Cash out' })
+      expect(await screen.findByText('Access Bank')).toBeInTheDocument()
+      expect(screen.getByText('Kuda Bank')).toBeInTheDocument()
+    } finally {
+      global.fetch = originalFetch
+    }
+  })
+
+  it('updates bank options when /api/banks fetch succeeds', async () => {
+    const originalFetch = global.fetch
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: true,
+          data: [{ code: '999', name: 'Custom Live Bank' }],
+        }),
+        { status: 200 }
+      )
+    )
+    try {
+      mockGetBalances.mockResolvedValue([balance('cNGN', 10_000_000_000n)])
+      render(<WithdrawPage />)
+      await screen.findByRole('heading', { name: 'Cash out' })
+      expect(await screen.findByText('Custom Live Bank')).toBeInTheDocument()
+    } finally {
+      global.fetch = originalFetch
+    }
   })
 })

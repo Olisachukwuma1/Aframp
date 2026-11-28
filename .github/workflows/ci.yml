@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, dev-frontend]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,14 +14,15 @@ jobs:
   code-quality:
     name: Code Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Cache Docker layers
-        uses: actions/cache@v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ github.sha }}
@@ -29,27 +30,28 @@ jobs:
             ${{ runner.os }}-buildx-
 
       - name: Build test image
-        run: docker-compose -f docker-compose.test.yml build
+        run: docker compose -f docker-compose.test.yml build
         env:
           BUILDKIT_INLINE_CACHE: 1
 
       - name: Run Lint
-        run: docker-compose -f docker-compose.test.yml run --rm aframp-lint
+        run: docker compose -f docker-compose.test.yml run --rm aframp-lint
 
       - name: Run TypeScript Check
-        run: docker-compose -f docker-compose.test.yml run --rm aframp-typecheck
+        run: docker compose -f docker-compose.test.yml run --rm aframp-typecheck
 
       - name: Run Prettier Check
-        run: docker-compose -f docker-compose.test.yml run --rm aframp-test npm run format:check
+        run: docker compose -f docker-compose.test.yml run --rm aframp-test npm run format:check
 
   security:
     name: Security Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -62,7 +64,7 @@ jobs:
         continue-on-error: true
 
       - name: Snyk Security Scan
-        uses: snyk/actions/node@master
+        uses: snyk/actions/node@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
@@ -71,17 +73,26 @@ jobs:
         run: bash scripts/owasp-scan.sh
         continue-on-error: true
 
+      - name: Run wallet deps audit
+        run: bash scripts/audit-wallet-deps.sh
+        continue-on-error: true
+
   test:
     name: Tests & Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Cache Docker layers
-        uses: actions/cache@v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ github.sha }}
@@ -89,12 +100,28 @@ jobs:
             ${{ runner.os }}-buildx-
 
       - name: Build test image
-        run: docker-compose -f docker-compose.test.yml build
+        run: docker compose -f docker-compose.test.yml build
         env:
           BUILDKIT_INLINE_CACHE: 1
 
       - name: Run tests with coverage
-        run: docker-compose -f docker-compose.test.yml run --rm aframp-test
+        run: docker compose -f docker-compose.test.yml run --rm aframp-test
+
+      # The tests above ran inside the Docker image; the bundle build runs on
+      # the runner, so it needs its own Node and dependencies.
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # docker-compose.test.yml mounts node_modules and .next as anonymous
+      # volumes inside the repo bind mount, which leaves root-owned empty
+      # directories in the checkout; clear them so npm can write.
+      - name: Install dependencies
+        run: |
+          sudo rm -rf node_modules .next
+          npm ci
 
       - name: Check route bundle budget
         run: |
@@ -102,18 +129,17 @@ jobs:
           node scripts/check-bundle-budget.mjs
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5.5.5
         with:
           files: ./coverage/coverage-final.json
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
           verbose: true
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: coverage-report
           path: coverage
@@ -121,7 +147,9 @@ jobs:
 
       - name: Comment coverage on PR
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        # Fork PRs get a read-only token; the report is informational, so never fail on it.
+        continue-on-error: true
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const fs = require('fs');
@@ -156,13 +184,36 @@ jobs:
               body: comment
             });
 
+  image-budget:
+    name: Image Size Budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check image size budgets
+        run: node scripts/check-image-budget.mjs
+
   pr-description:
     name: PR Description Check
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require a filled-in Summary
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const body = context.payload.pull_request.body || ''
@@ -182,16 +233,17 @@ jobs:
     name: Diff Coverage
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Cache Docker layers
-        uses: actions/cache@v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: /tmp/.buildx-cache
           key: ${{ runner.os }}-buildx-${{ github.sha }}
@@ -199,29 +251,54 @@ jobs:
             ${{ runner.os }}-buildx-
 
       - name: Build test image
-        run: docker-compose -f docker-compose.test.yml build
+        run: docker compose -f docker-compose.test.yml build
         env:
           BUILDKIT_INLINE_CACHE: 1
 
       - name: Run tests with coverage
-        run: docker-compose -f docker-compose.test.yml run --rm aframp-test
+        run: docker compose -f docker-compose.test.yml run --rm aframp-test
 
+      # Runs on the runner, not in the test container: the check needs git and
+      # the repo history (fetch-depth: 0 above), which the Alpine image lacks.
+      # It reads ./coverage, which the container wrote through its volume mount.
       - name: Require 80% coverage on changed files
         run: |
-          docker-compose -f docker-compose.test.yml run --rm aframp-test \
-            node scripts/check-diff-coverage.js \
+          node scripts/check-diff-coverage.js \
             "${{ github.event.pull_request.base.sha }}" \
             "${{ github.event.pull_request.head.sha }}"
 
-  build:
-    name: Build
+  e2e:
+    name: E2E (Playwright)
     runs-on: ubuntu-latest
-    needs: [code-quality, test]
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests
+        run: npm run test:e2e
+
+  build:
+    name: Build (Testnet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [code-quality, test]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -235,15 +312,60 @@ jobs:
           NEXT_API_URL: ${{ secrets.NEXT_API_URL }}
           NEXT_PUBLIC_STELLAR_NETWORK: TESTNET
 
+  # ── Mainnet build ──────────────────────────────────────────────────────────
+  # Runs only on pull requests that target the main branch so it does not add
+  # latency to develop-branch pushes while still blocking any PR that would
+  # break under production environment variables before it is merged.
+  #
+  # Why a second build job?
+  #   The testnet and mainnet builds differ in NEXT_PUBLIC_STELLAR_NETWORK and
+  #   potentially in issuer addresses and Horizon URLs embedded at build time.
+  #   A build that succeeds with TESTNET config can silently fail with MAINNET
+  #   config if, for example, a conditional import, a tree-shaken code-path, or
+  #   an env-var assertion is only exercised with the production value.
+  #   Running both builds on every PR-to-main catches those issues before they
+  #   reach the release pipeline.
+  build-mainnet:
+    name: Build (Mainnet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [code-quality, test]
+    # Only block PRs that are about to land on main — not develop pushes.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production (mainnet env)
+        run: npm run build
+        env:
+          NEXT_API_URL: ${{ secrets.NEXT_API_URL_MAINNET }}
+          NEXT_PUBLIC_STELLAR_NETWORK: MAINNET
+          # Stub issuer addresses mirror what the production backend configures.
+          # Use the real values via repository secrets in production; these
+          # stubs only need to be syntactically valid Stellar public keys so
+          # that any env-var assertions pass at build time.
+          NEXT_PUBLIC_CNGN_ISSUER: ${{ secrets.MAINNET_CNGN_ISSUER }}
+          NEXT_PUBLIC_USDC_ISSUER: ${{ secrets.MAINNET_USDC_ISSUER }}
+
   lighthouse:
     name: Lighthouse CI (90+ all categories)
     runs-on: ubuntu-latest
-    needs: build
+    timeout-minutes: 20
+    needs: [build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: '22'
           cache: 'npm'
@@ -260,8 +382,17 @@ jobs:
       - name: Install Lighthouse CI
         run: npm install -g @lhci/cli@0.14.0
 
+      # Not every ubuntu-latest image exposes Chrome where LHCI's launcher looks
+      # ("Chrome installation not found"), so install Playwright's Chromium and
+      # point LHCI at it explicitly.
+      - name: Install Chromium for Lighthouse
+        run: |
+          npx playwright install --with-deps chromium
+          echo "CHROME_PATH=$(node -e "console.log(require('@playwright/test').chromium.executablePath())")" >> "$GITHUB_ENV"
+
       - name: Start server and run Lighthouse CI
         run: |
+          echo "Using Chrome at $CHROME_PATH"
           npm start &
           SERVER_PID=$!
           echo "Server PID: $SERVER_PID"
@@ -270,13 +401,14 @@ jobs:
             sleep 2
           done
           lhci autorun
+          lhci autorun --config=lighthouserc.mobile.json
           kill $SERVER_PID 2>/dev/null || true
         env:
           LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
 
       - name: Upload Lighthouse results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: lighthouse-results-${{ github.run_number }}
           path: .lighthouseci/

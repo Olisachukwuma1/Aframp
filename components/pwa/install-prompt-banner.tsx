@@ -1,65 +1,43 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { X } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Download, X } from 'lucide-react'
 
-interface BeforeInstallPromptEvent extends Event {
-  prompt: () => Promise<void>
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
-}
+import { Button } from '@/components/ui/button'
+import { useInstallPrompt } from '@/hooks/use-install-prompt'
 
 export function InstallPromptBanner() {
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null)
-  const [isVisible, setIsVisible] = useState(false)
+  const { eligible, platform, install, dismiss } = useInstallPrompt()
 
-  useEffect(() => {
-    const handler = (e: Event) => {
-      e.preventDefault()
-      setDeferredPrompt(e as BeforeInstallPromptEvent)
-      setIsVisible(true)
-    }
-
-    window.addEventListener('beforeinstallprompt', handler)
-    return () => window.removeEventListener('beforeinstallprompt', handler)
-  }, [])
-
-  const handleInstall = async () => {
-    if (!deferredPrompt) return
-
-    deferredPrompt.prompt()
-    await deferredPrompt.userChoice
-
-    setDeferredPrompt(null)
-    setIsVisible(false)
-  }
-
-  const dismiss = () => {
-    setIsVisible(false)
-    setDeferredPrompt(null)
-  }
-
-  if (!isVisible) return null
+  if (!eligible) return null
 
   return (
-    <div className="bg-panel border-hairline fixed bottom-4 left-4 right-4 z-50 flex items-center justify-between gap-4 rounded-lg border p-4 shadow-lg md:left-auto md:right-4 md:max-w-md">
-      <div className="flex-1">
-        <h3 className="text-sm font-bold text-white">Install Aframp</h3>
-        <p className="text-dim mt-1 text-xs">Add to your home screen for quick access</p>
+    <div
+      role="region"
+      aria-label="Install Aframp"
+      className="bg-rail border-hairline fixed inset-x-0 bottom-0 z-50 flex items-center gap-3 border-t p-4 md:inset-x-auto md:right-4 md:bottom-4 md:max-w-sm md:rounded-lg md:border"
+    >
+      <Download className="text-brand size-6 shrink-0" strokeWidth={1.75} />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-bold text-white">Install Aframp</p>
+        <p className="text-dim text-xs">
+          {platform === 'ios'
+            ? 'Tap Share, then "Add to Home Screen" for quick access.'
+            : 'Add Aframp to your home screen for quick access.'}
+        </p>
       </div>
-      <div className="flex items-center gap-2">
-        <Button onClick={handleInstall} size="sm">
+      {platform === 'android' && (
+        <Button size="sm" onClick={install}>
           Install
         </Button>
-        <button
-          type="button"
-          aria-label="Dismiss install prompt"
-          onClick={dismiss}
-          className="text-dim hover:text-bright shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm p-1"
-        >
-          <X className="size-4" aria-hidden />
-        </button>
-      </div>
+      )}
+      <button
+        type="button"
+        aria-label="Dismiss install prompt"
+        onClick={dismiss}
+        className="text-dim hover:text-bright shrink-0"
+      >
+        <X className="size-4" strokeWidth={1.75} />
+      </button>
     </div>
   )
 }

@@ -6,31 +6,19 @@ import { useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/ui/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { NativeSelect } from '@/components/ui/native-select'
 import { api, ApiError, type Balance, type FeeEstimate, type Remittance } from '@/lib/api'
 import { formatStroops, isWholeKobo, parseAmountToStroops } from '@/lib/money'
 import { useAuthenticatedSession } from '@/components/session-provider'
+import { REMITTANCE_STATUS } from '@/lib/status'
+import { useContacts } from '@/lib/contacts'
 import { Plus } from 'lucide-react'
 
 const ASSETS = ['XLM', 'cNGN']
 const STELLAR_ADDRESS_LENGTH = 56
-const STORAGE_KEY = 'aframp_contacts'
-
-interface Contact {
-  id: string
-  name: string
-  address: string
-  createdAt: string
-}
 
 interface SendState {
   address: string
@@ -40,17 +28,10 @@ interface SendState {
   error: string | null
   feeEstimate: FeeEstimate | null
   loadingFee: boolean
+  feeError: boolean
   submitting: boolean
   remittances: Remittance[]
   showContacts: boolean
-  contacts: Contact[]
-}
-
-const STATUS_LABEL: Record<Remittance['status'], string> = {
-  pending: 'Pending',
-  submitted: 'Submitted',
-  confirmed: 'Confirmed',
-  failed: 'Failed',
 }
 
 export default function SendPage() {
@@ -65,11 +46,12 @@ export default function SendPage() {
     error: null,
     feeEstimate: null,
     loadingFee: false,
+    feeError: false,
     submitting: false,
     remittances: [],
     showContacts: false,
-    contacts: [],
   })
+  const { contacts } = useContacts()
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -99,34 +81,23 @@ export default function SendPage() {
     return () => controller.abort()
   }, [load])
 
-  // Load contacts from localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY)
-      if (stored) {
-        const parsed = JSON.parse(stored) as Contact[]
-        setState((prev) => ({ ...prev, contacts: parsed }))
-      }
-    } catch (error) {
-      console.error('Failed to load contacts:', error)
-    }
-  }, [])
-
   // Load fee estimate when amount or asset changes
   useEffect(() => {
     const stroops = parseAmountToStroops(state.amount)
     if (stroops === null || stroops <= 0n) {
-      setState((prev) => ({ ...prev, feeEstimate: null }))
+      setState((prev) => ({ ...prev, feeEstimate: null, feeError: false }))
       return
     }
 
     const loadFee = async () => {
-      setState((prev) => ({ ...prev, loadingFee: true }))
+      setState((prev) => ({ ...prev, loadingFee: true, feeError: false }))
       try {
         const estimate = await api.getRemittanceFeeEstimate(token, stroops, state.asset)
         setState((prev) => ({ ...prev, feeEstimate: estimate, loadingFee: false }))
       } catch {
-        setState((prev) => ({ ...prev, feeEstimate: null, loadingFee: false }))
+        // A failed estimate must never block the send: fall back to the plain
+        // amount and let the user know the fee could not be fetched (#708).
+        setState((prev) => ({ ...prev, feeEstimate: null, loadingFee: false, feeError: true }))
       }
     }
 
@@ -145,7 +116,8 @@ export default function SendPage() {
 
   function validate(): string | null {
     if (!state.address) return 'Enter recipient address.'
-    if (!validateAddress()) return 'Recipient address must be a valid 56-character Stellar address starting with G.'
+    if (!validateAddress())
+      return 'Recipient address must be a valid 56-character Stellar address starting with G.'
     if (stroops === null || stroops <= 0n) return 'Enter an amount to send.'
     if (!isWholeKobo(stroops)) return 'Amount must be a whole number of stroops.'
     if (stroops > available) return 'That is more than your available balance.'
@@ -162,13 +134,20 @@ export default function SendPage() {
 
     setState((prev) => ({ ...prev, submitting: true, error: null }))
     try {
-      await api.createRemittance(token, state.address, stroops!, state.asset, state.memo || undefined)
+      await api.createRemittance(
+        token,
+        state.address,
+        stroops!,
+        state.asset,
+        state.memo || undefined
+      )
       setState((prev) => ({
         ...prev,
         address: '',
         amount: '',
         memo: '',
         feeEstimate: null,
+        feeError: false,
         error: null,
       }))
       await load()
@@ -222,21 +201,17 @@ export default function SendPage() {
 
           <div className="space-y-2">
             <Label htmlFor="asset">Asset</Label>
-            <Select
+            <NativeSelect
+              id="asset"
               value={state.asset}
               onValueChange={(asset) => setState((prev) => ({ ...prev, asset }))}
             >
-              <SelectTrigger id="asset">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {ASSETS.map((asset) => (
-                  <SelectItem key={asset} value={asset}>
-                    {asset}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              {ASSETS.map((asset) => (
+                <option key={asset} value={asset}>
+                  {asset}
+                </option>
+              ))}
+            </NativeSelect>
           </div>
 
           <div className="space-y-2">
@@ -250,19 +225,19 @@ export default function SendPage() {
                   setState((prev) => ({
                     ...prev,
                     address: event.target.value.toUpperCase(),
-                    showContacts: event.target.value.length > 0 ? false : state.contacts.length > 0,
+                    showContacts: event.target.value.length > 0 ? false : contacts.length > 0,
                   }))
                 }
                 onFocus={() =>
                   setState((prev) => ({
                     ...prev,
-                    showContacts: prev.address.length === 0 && prev.contacts.length > 0,
+                    showContacts: prev.address.length === 0 && contacts.length > 0,
                   }))
                 }
               />
-              {state.showContacts && state.contacts.length > 0 && (
+              {state.showContacts && contacts.length > 0 && (
                 <div className="absolute top-full left-0 right-0 mt-1 bg-panel border border-hairline rounded-lg z-10 max-h-48 overflow-y-auto">
-                  {state.contacts.map((contact) => (
+                  {contacts.map((contact) => (
                     <button
                       key={contact.id}
                       type="button"
@@ -314,21 +289,29 @@ export default function SendPage() {
             <div className="bg-raised border-hairline rounded-lg border p-3 space-y-2 text-sm">
               <div className="flex justify-between">
                 <span className="text-dim">Amount</span>
-                <span>{formatStroops(stroops ?? 0n)} {state.asset}</span>
+                <span>
+                  {formatStroops(stroops ?? 0n)} {state.asset}
+                </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-dim">Fee</span>
-                <span>{formatStroops(state.feeEstimate.fee_stroops)} {state.asset}</span>
+                <span>
+                  {formatStroops(state.feeEstimate.fee_stroops)} {state.asset}
+                </span>
               </div>
               {state.feeEstimate.network_fee_stroops > 0n && (
                 <div className="flex justify-between">
                   <span className="text-dim">Network fee</span>
-                  <span>{formatStroops(state.feeEstimate.network_fee_stroops)} {state.asset}</span>
+                  <span>
+                    {formatStroops(state.feeEstimate.network_fee_stroops)} {state.asset}
+                  </span>
                 </div>
               )}
               <div className="border-hairline border-t pt-2 flex justify-between font-bold">
                 <span>Total</span>
-                <span>{formatStroops(totalAmount ?? 0n)} {state.asset}</span>
+                <span>
+                  {formatStroops(totalAmount ?? 0n)} {state.asset}
+                </span>
               </div>
             </div>
           )}
@@ -337,6 +320,13 @@ export default function SendPage() {
             <p className="text-dim text-xs flex items-center gap-2">
               <LoadingSpinner className="size-3" />
               Calculating fee estimate...
+            </p>
+          )}
+
+          {state.feeError && stroops && stroops > 0n && (
+            <p role="status" className="text-warning text-xs">
+              Fee estimate unavailable. You can still send; the exact fee is applied when the
+              payment is submitted.
             </p>
           )}
 
@@ -351,9 +341,15 @@ export default function SendPage() {
 
         {state.remittances.length > 0 && (
           <section className="space-y-3">
-            <h2 className="text-dim text-xs font-bold tracking-widest uppercase">
-              Recent sends
-            </h2>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-dim text-xs font-bold tracking-widest uppercase">Recent sends</h2>
+              <Link
+                href="/remittances"
+                className="text-brand text-xs font-semibold hover:underline"
+              >
+                View all
+              </Link>
+            </div>
             <ul className="border-hairline divide-y">
               {state.remittances.map((remittance) => (
                 <li key={remittance.id} className="space-y-1 py-3">
@@ -366,17 +362,7 @@ export default function SendPage() {
                         {remittance.destination_address}
                       </p>
                     </div>
-                    <Badge
-                      variant={
-                        remittance.status === 'confirmed'
-                          ? 'default'
-                          : remittance.status === 'failed'
-                            ? 'destructive'
-                            : 'secondary'
-                      }
-                    >
-                      {STATUS_LABEL[remittance.status]}
-                    </Badge>
+                    <StatusBadge status={remittance.status} config={REMITTANCE_STATUS} />
                   </div>
                   {remittance.tx_hash && (
                     <a

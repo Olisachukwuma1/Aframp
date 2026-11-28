@@ -35,7 +35,9 @@ describe('downloadBlob', () => {
 
   it('downloadCsv escapes quotes', () => {
     let captured: Blob | undefined
-    ;(URL.createObjectURL as jest.Mock).mockImplementation((b: Blob) => ((captured = b), 'blob:mock'))
+    ;(URL.createObjectURL as jest.Mock).mockImplementation(
+      (b: Blob) => ((captured = b), 'blob:mock')
+    )
     downloadCsv('t.csv', [['a"b', 'c']])
     expect(captured).toBeDefined()
   })

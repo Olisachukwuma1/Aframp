@@ -1,47 +1,62 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { redirect } from 'next/navigation'
+import { mutate as clearSwrCache } from 'swr'
 import {
   api,
+  isOffline,
   setUnauthorizedHandler,
   type AuthResponse,
   type LoginResult,
   type Me,
   type OtpChallengeResponse,
 } from '@/lib/api'
-import { clearCsrfToken, getCsrfToken } from '@/lib/csrf'
 
-const STORAGE_KEY = 'aframp.session'
+// #633: token is now stored in an HTTP-only cookie via /api/session,
+// not in localStorage. No token is ever readable by client-side JS.
+
+/** #635: cap how long sign-out waits for the server-side logout to complete. */
+const LOGOUT_TIMEOUT_MS = 5000
+
+type MeResult = { success: true; data: Me } | { success: false; reason: 'network' }
 
 interface Session {
   token: string
   userId: string
   merchantId: string | null
+  /** Epoch ms when the token expires (#867). Absent on cookies set before this field existed. */
+  expiresAt?: number
 }
 
 interface SessionContextValue {
   session: Session | null
-  /** False until localStorage has been read — guards against redirecting on first paint. */
+  /** False until the cookie has been read from the server — guards against redirecting on first paint. */
   ready: boolean
-  /** Returns the raw result so the caller can branch: a session (legacy
-   * no-phone accounts) vs a challenge (everyone else) that needs `/verify`. */
+  /** True while a sign-out request is in-flight (server logout not yet confirmed). */
+  signingOut: boolean
   signIn: (email: string, password: string) => Promise<LoginResult>
   /** Always a challenge — the account doesn't exist until `completeOtp` succeeds. */
   signUp: (
     email: string,
     password: string,
     name: string,
-    phoneNumber: string
+    phoneNumber: string,
+    acceptedTermsVersion: string
   ) => Promise<OtpChallengeResponse>
   completeOtp: (challengeId: string, code: string) => Promise<void>
   signOut: () => Promise<void>
-  /** Re-fetches /me and updates any cached profile data. */
-  refreshMe: () => Promise<Me | null>
-  /** Latest profile data from /me, if fetched. */
+  /** Re-fetches /me and updates any cached profile data. Returns a discriminated
+   * union so callers can distinguish between success, network errors, and auth
+   * failures (401). Auth failures are not caught — they propagate to trigger
+   * signOut via the unauthorized handler. */
+  refreshMe: () => Promise<MeResult>
+  /** Latest profile data from /me, if fetched. Loaded once per session; read it from here rather than calling `api.getMe`. */
   me: Me | null
-  /** True while the logout API call is in flight. */
-  isLoggingOut: boolean
+  /** True from sign-in until the first /me request settles. */
+  meLoading: boolean
+  /** Why the latest /me request failed, if it did. Cleared on the next attempt. */
+  meError: unknown
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null)
@@ -51,37 +66,71 @@ function toSession(response: AuthResponse): Session {
     token: response.token,
     userId: response.user_id,
     merchantId: response.merchant_id,
+    // Matches COOKIE_MAX_AGE / JWT expiry in app/api/session/route.ts.
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
   }
+}
+
+/** Persist the session to the HTTP-only cookie via the API route. */
+async function persistCookie(next: Session): Promise<void> {
+  await fetch('/api/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(next),
+  })
+}
+
+/** Clear the HTTP-only cookie. */
+async function clearCookie(): Promise<void> {
+  await fetch('/api/session', { method: 'DELETE' })
+}
+
+/** #635: resolve after `promise` settles or after `ms`, whichever comes first. */
+function withTimeout(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    promise.then(
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      () => {
+        clearTimeout(timer)
+        resolve()
+      }
+    )
+  })
 }
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState(false)
   const [me, setMe] = useState<Me | null>(null)
-  const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const [meError, setMeError] = useState<unknown>(null)
+  const meRequest = useRef<Promise<MeResult> | null>(null)
+  const [signingOut, setSigningOut] = useState(false)
 
+  // #633: on mount, read the session from the HTTP-only cookie via
+  // /api/session (GET). This replaces the localStorage read.
   useEffect(() => {
-    // Mint the CSRF token up front rather than lazily on the first mutation:
-    // `middleware.ts` rejects a state-changing request that arrives without
-    // one, and seeding here means even an immediate submit has a token.
-    getCsrfToken()
-    try {
-      const stored = window.localStorage.getItem(STORAGE_KEY)
-      if (stored) setSession(JSON.parse(stored) as Session)
-    } catch {
-      window.localStorage.removeItem(STORAGE_KEY)
-    }
-    setReady(true)
+    fetch('/api/session')
+      .then((res) => res.json() as Promise<Session | null>)
+      .then((stored) => {
+        if (stored?.token) setSession(stored)
+      })
+      .catch(() => {
+        // Network error on startup — start with no session.
+      })
+      .finally(() => setReady(true))
   }, [])
 
-  const persist = useCallback((next: Session) => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-    } catch {
-      // Storage may be unavailable (private mode, quota, blocked) — the
-      // session still works for this tab, it just won't survive a reload.
-    }
+  const persist = useCallback(async (next: Session) => {
     setSession(next)
+    try {
+      await persistCookie(next)
+    } catch {
+      // Best-effort: the session still works for this tab if the cookie write fails.
+    }
   }, [])
 
   const signIn = useCallback(
@@ -89,73 +138,134 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const result = await api.login(email, password)
       // Only a legacy no-phone account gets a session straight away; a
       // challenge means the caller still has to route to `/verify`.
-      if ('token' in result) persist(toSession(result))
+      if ('token' in result) await persist(toSession(result))
       return result
     },
     [persist]
   )
 
   const signUp = useCallback(
-    (email: string, password: string, name: string, phoneNumber: string) => {
-      return api.signup(email, password, name, phoneNumber)
+    (
+      email: string,
+      password: string,
+      name: string,
+      phoneNumber: string,
+      acceptedTermsVersion: string
+    ) => {
+      return api.signup(email, password, name, phoneNumber, acceptedTermsVersion)
     },
     []
   )
 
   const completeOtp = useCallback(
     async (challengeId: string, code: string) => {
-      persist(toSession(await api.verifyOtp(challengeId, code)))
+      await persist(toSession(await api.verifyOtp(challengeId, code)))
     },
     [persist]
   )
 
   const signOut = useCallback(async () => {
-    setIsLoggingOut(true)
+    // #635: await the server-side logout so the token is invalidated before we
+    // drop local state. A short timeout prevents a hanging request from
+    // blocking sign-out indefinitely.
+    setSigningOut(true)
     try {
       if (session) {
-        // Must await logout before clearing local state to ensure server-side
-        // session is invalidated. Use a short timeout to prevent user being
-        // blocked indefinitely if the request hangs.
-        const logoutPromise = api.logout(session.token)
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Logout timeout')), 5000)
+        await withTimeout(
+          api.logout(session.token).catch(() => {}),
+          LOGOUT_TIMEOUT_MS
         )
-        await Promise.race([logoutPromise, timeoutPromise]).catch(() => {
-          // Timeout or other error; continue with local cleanup.
-        })
       }
+      await withTimeout(
+        clearCookie().catch(() => {}),
+        LOGOUT_TIMEOUT_MS
+      )
     } finally {
-      window.localStorage.removeItem(STORAGE_KEY)
-      // The token is bound to the session that just ended; dropping it means
-      // the next sign-in starts from a fresh one.
-      clearCsrfToken()
       setSession(null)
       setMe(null)
-      setIsLoggingOut(false)
+      setMeError(null)
+      // Cached page data belongs to the signed-out user; don't show it to the next one.
+      void clearSwrCache(() => true, undefined, { revalidate: false })
+      setSigningOut(false)
     }
   }, [session])
 
-  const refreshMe = useCallback(async () => {
-    if (!session) return null
-    try {
-      const data = await api.getMe(session.token)
-      setMe(data)
-      return data
-    } catch {
-      return null
+  const refreshMe = useCallback((): Promise<MeResult> => {
+    if (!session) {
+      return Promise.reject(new Error('refreshMe called without a session'))
     }
+    // Callers that ask while a request is already in flight share it, so a page
+    // load never costs more than one /me.
+    let request = meRequest.current
+    if (!request) {
+      setMeError(null)
+      request = api
+        .getMe(session.token)
+        .then((data): MeResult => {
+          setMe(data)
+          return { success: true, data }
+        })
+        .catch((cause: unknown): MeResult => {
+          setMeError(cause)
+          // Network errors (status 0) are recoverable — report them without sign-out.
+          // Auth errors (401) are not caught here; they propagate to trigger the
+          // unauthorized handler in lib/api.ts, which calls signOut.
+          if (isOffline(cause)) return { success: false, reason: 'network' }
+          throw cause
+        })
+        .finally(() => {
+          meRequest.current = null
+        })
+      meRequest.current = request
+    }
+    return request
   }, [session])
 
-  // Tokens expire after 24h with no refresh path, so drop the session on any
-  // 401 from an authenticated call — the route guards handle the redirect.
+  // Everything that needs the profile (sidebar, Cash out, Settings, the admin
+  // gate) reads it from context, so fetch it once when the session starts.
+  const token = session?.token
+  useEffect(() => {
+    if (!token) return
+    refreshMe().catch(() => {
+      // Surfaced through `meError`.
+    })
+    // `refreshMe` changes with `session`; the token is the only part that matters here.
+  }, [token])
+
   useEffect(() => {
     setUnauthorizedHandler(signOut)
     return () => setUnauthorizedHandler(null)
   }, [signOut])
 
+  const meLoading = session !== null && me === null && meError === null
+
   const value = useMemo(
-    () => ({ session, ready, signIn, signUp, completeOtp, signOut, refreshMe, me, isLoggingOut }),
-    [session, ready, signIn, signUp, completeOtp, signOut, refreshMe, me, isLoggingOut]
+    () => ({
+      session,
+      ready,
+      signingOut,
+      signIn,
+      signUp,
+      completeOtp,
+      signOut,
+      refreshMe,
+      me,
+      meLoading,
+      meError,
+    }),
+    [
+      session,
+      ready,
+      signingOut,
+      signIn,
+      signUp,
+      completeOtp,
+      signOut,
+      refreshMe,
+      me,
+      meLoading,
+      meError,
+    ]
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
@@ -167,10 +277,11 @@ export function useSession() {
   return context
 }
 
-/**
- * For screens that cannot render without a token. The `(app)` layout guarantees
- * one exists before mounting children, so this narrows the type for them.
- */
+/** Like `useSession`, but `null` outside a provider. For public pages a signed-in merchant may also open. */
+export function useOptionalSession() {
+  return useContext(SessionContext)
+}
+
 export function useAuthenticatedSession(): Session {
   const { session } = useSession()
   if (!session) redirect('/login')

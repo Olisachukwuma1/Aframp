@@ -1,111 +1,141 @@
-import { buildDailyRevenue, assetsInSeries } from '../revenue'
-import type { Payment } from '../api'
+import { assetsInSeries, buildDailyRevenue } from '@/lib/revenue'
+import type { Payment } from '@/lib/api'
 
-describe('revenue', () => {
-  const mockNow = new Date('2024-01-10T12:00:00Z')
+const NOW = new Date('2026-08-15T12:00:00.000Z')
 
-  describe('buildDailyRevenue', () => {
-    it('should aggregate payments by day and asset', () => {
-      const payments: Payment[] = [
-        {
-          id: '1',
-          amount_stroops: 1000000n,
-          asset: 'XLM',
-          status: 'confirmed',
-          created_at: '2024-01-09T10:00:00Z',
-        } as Payment,
-        {
-          id: '2',
-          amount_stroops: 500000n,
-          asset: 'XLM',
-          status: 'confirmed',
-          created_at: '2024-01-09T14:00:00Z',
-        } as Payment,
-      ]
+function payment(overrides: Partial<Payment>): Payment {
+  return {
+    id: 'p1',
+    merchant_id: 'm1',
+    wallet_id: 'w1',
+    wallet_address: 'GADDRESS',
+    tx_hash: 'hash',
+    amount_stroops: 10_000_000n,
+    asset: 'XLM',
+    network: 'testnet',
+    status: 'confirmed',
+    confirmations: 1,
+    created_at: NOW.toISOString(),
+    updated_at: NOW.toISOString(),
+    ...overrides,
+  }
+}
 
-      const result = buildDailyRevenue(payments, mockNow)
-      const day = result.find((d) => d.date === '2024-01-09')
-
-      expect(day).toBeDefined()
-      expect(day?.totals.XLM).toBeCloseTo(0.15, 5) // 1500000 stroops / 10^7
-    })
-
-    it('should warn when stroops exceed MAX_SAFE_INTEGER', () => {
-      const warnSpy = jest.spyOn(console, 'warn').mockImplementation()
-      const bigBalance = BigInt(Number.MAX_SAFE_INTEGER) + 1000000n
-
-      const payments: Payment[] = [
-        {
-          id: '1',
-          amount_stroops: bigBalance,
-          asset: 'XLM',
-          status: 'confirmed',
-          created_at: '2024-01-09T10:00:00Z',
-        } as Payment,
-      ]
-
-      buildDailyRevenue(payments, mockNow)
-
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Precision loss')
-      )
-      warnSpy.mockRestore()
-    })
-
-    it('should ignore unconfirmed payments', () => {
-      const payments: Payment[] = [
-        {
-          id: '1',
-          amount_stroops: 1000000n,
-          asset: 'XLM',
-          status: 'pending',
-          created_at: '2024-01-09T10:00:00Z',
-        } as Payment,
-      ]
-
-      const result = buildDailyRevenue(payments, mockNow)
-      const day = result.find((d) => d.date === '2024-01-09')
-
-      expect(day?.totals.XLM).toBeUndefined()
-    })
-
-    it('should handle payments from different assets separately', () => {
-      const payments: Payment[] = [
-        {
-          id: '1',
-          amount_stroops: 1000000n,
-          asset: 'XLM',
-          status: 'confirmed',
-          created_at: '2024-01-09T10:00:00Z',
-        } as Payment,
-        {
-          id: '2',
-          amount_stroops: 1000000n,
-          asset: 'cNGN',
-          status: 'confirmed',
-          created_at: '2024-01-09T11:00:00Z',
-        } as Payment,
-      ]
-
-      const result = buildDailyRevenue(payments, mockNow)
-      const day = result.find((d) => d.date === '2024-01-09')
-
-      expect(day?.totals.XLM).toBeDefined()
-      expect(day?.totals.cNGN).toBeDefined()
-      expect(day?.totals.XLM).not.toEqual(day?.totals.cNGN)
-    })
+describe('buildDailyRevenue', () => {
+  it('returns exactly 7 entries, oldest first, ending on `now`', () => {
+    const entries = buildDailyRevenue([], NOW)
+    expect(entries).toHaveLength(7)
+    expect(entries[6].date).toBe('2026-08-15')
+    expect(entries[0].date).toBe('2026-08-09')
   })
 
-  describe('assetsInSeries', () => {
-    it('should return unique assets in first-seen order', () => {
-      const entries = [
-        { date: '2024-01-08', label: 'Tue', totals: { XLM: 1.0, cNGN: 2.0 } },
-        { date: '2024-01-09', label: 'Wed', totals: { cNGN: 3.0, USDC: 1.5 } },
-      ]
+  it('sums confirmed payments for the same day and asset', () => {
+    const payments = [
+      payment({ amount_stroops: 10_000_000n, created_at: NOW.toISOString() }),
+      payment({ amount_stroops: 25_000_000n, created_at: NOW.toISOString() }),
+    ]
+    const entries = buildDailyRevenue(payments, NOW)
+    expect(entries[6].totals.XLM).toBe(3.5)
+  })
 
-      const assets = assetsInSeries(entries)
+  it('ignores payments that are not confirmed', () => {
+    const payments = [
+      payment({ status: 'detected' }),
+      payment({ status: 'verified' }),
+      payment({ status: 'failed' }),
+    ]
+    const entries = buildDailyRevenue(payments, NOW)
+    expect(entries.every((e) => Object.keys(e.totals).length === 0)).toBe(true)
+  })
 
-      expect(assets).toEqual(['XLM', 'cNGN', 'USDC'])
+  it('keys totals per asset separately, never summing across assets', () => {
+    const payments = [
+      payment({ asset: 'XLM', amount_stroops: 10_000_000n }),
+      payment({ asset: 'cNGN', amount_stroops: 50_000_000n }),
+    ]
+    const entries = buildDailyRevenue(payments, NOW)
+    expect(entries[6].totals).toEqual({ XLM: 1, cNGN: 5 })
+  })
+
+  it('buckets a payment into the correct day within the window', () => {
+    const twoDaysAgo = new Date(NOW.getTime() - 2 * 24 * 60 * 60 * 1000)
+    const payments = [
+      payment({ created_at: twoDaysAgo.toISOString(), amount_stroops: 10_000_000n }),
+    ]
+    const entries = buildDailyRevenue(payments, NOW)
+    const bucket = entries.find((e) => e.date === '2026-08-13')
+    expect(bucket?.totals.XLM).toBe(1)
+    expect(entries[6].totals.XLM).toBeUndefined()
+  })
+
+  it('drops payments older than the 7-day window', () => {
+    const tenDaysAgo = new Date(NOW.getTime() - 10 * 24 * 60 * 60 * 1000)
+    const payments = [payment({ created_at: tenDaysAgo.toISOString() })]
+    const entries = buildDailyRevenue(payments, NOW)
+    expect(entries.every((e) => Object.keys(e.totals).length === 0)).toBe(true)
+  })
+
+  it('drops payments dated after `now` (clock skew) instead of throwing', () => {
+    const tomorrow = new Date(NOW.getTime() + 24 * 60 * 60 * 1000)
+    const payments = [payment({ created_at: tomorrow.toISOString() })]
+    expect(() => buildDailyRevenue(payments, NOW)).not.toThrow()
+    const entries = buildDailyRevenue(payments, NOW)
+    expect(entries.every((e) => Object.keys(e.totals).length === 0)).toBe(true)
+  })
+
+  describe('precision near Number.MAX_SAFE_INTEGER', () => {
+    const STROOPS_PER_UNIT = 10_000_000n
+
+    it('converts exactly at the safe boundary (MAX_SAFE_INTEGER stroops)', () => {
+      const stroops = BigInt(Number.MAX_SAFE_INTEGER)
+      const payments = [payment({ amount_stroops: stroops })]
+      const entries = buildDailyRevenue(payments, NOW)
+      expect(entries[6].totals.XLM).toBe(Number(stroops) / Number(STROOPS_PER_UNIT))
     })
+
+    it('converts exactly just below the safe boundary', () => {
+      const stroops = BigInt(Number.MAX_SAFE_INTEGER) - 1n
+      const payments = [payment({ amount_stroops: stroops })]
+      const entries = buildDailyRevenue(payments, NOW)
+      expect(entries[6].totals.XLM).toBe(Number(stroops) / Number(STROOPS_PER_UNIT))
+    })
+
+    it('clamps totals above MAX_SAFE_INTEGER instead of silently rounding', () => {
+      const stroops = BigInt(Number.MAX_SAFE_INTEGER) + 1n
+      const payments = [payment({ amount_stroops: stroops })]
+      const entries = buildDailyRevenue(payments, NOW)
+      expect(entries[6].totals.XLM).toBe(
+        Number(BigInt(Number.MAX_SAFE_INTEGER)) / Number(STROOPS_PER_UNIT)
+      )
+    })
+
+    it('clamps aggregated totals that overflow only after summing', () => {
+      const half = BigInt(Number.MAX_SAFE_INTEGER) / 2n + 1n
+      const payments = [payment({ amount_stroops: half }), payment({ amount_stroops: half })]
+      const entries = buildDailyRevenue(payments, NOW)
+      expect(entries[6].totals.XLM).toBe(
+        Number(BigInt(Number.MAX_SAFE_INTEGER)) / Number(STROOPS_PER_UNIT)
+      )
+    })
+  })
+})
+
+describe('assetsInSeries', () => {
+  it('returns an empty array when nothing was confirmed', () => {
+    expect(assetsInSeries(buildDailyRevenue([], NOW))).toEqual([])
+  })
+
+  it('lists every asset that appears anywhere in the series, in first-seen order', () => {
+    const entries = buildDailyRevenue(
+      [
+        payment({ asset: 'cNGN', created_at: NOW.toISOString() }),
+        payment({
+          asset: 'XLM',
+          created_at: new Date(NOW.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+        }),
+      ],
+      NOW
+    )
+    expect(assetsInSeries(entries)).toEqual(['XLM', 'cNGN'])
   })
 })

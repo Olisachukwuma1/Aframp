@@ -5,37 +5,30 @@ import { toast } from 'sonner'
 import { api, Payment } from '@/lib/api'
 import { useSession } from '@/components/session-provider'
 
-/** Upper bound for the backoff delay between polls after repeated failures. */
-const MAX_BACKOFF_MS = 5 * 60 * 1000
-
 export function usePaymentPoller(intervalMs = 30000) {
   const { session } = useSession()
   const seenIdsRef = useRef<Set<string>>(new Set())
   const initialFetchDone = useRef(false)
+  const sessionTokenRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
-    if (!session?.token) return
+    const token = session?.token
 
-    const token = session.token
-    let cancelled = false
-    let inFlight = false
-    let failures = 0
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let controller: AbortController | undefined
+    if (sessionTokenRef.current !== token) {
+      sessionTokenRef.current = token
+      seenIdsRef.current = new Set()
+      initialFetchDone.current = false
+    }
+
+    if (!token) return
+
+    let active = true
 
     const pollTransactions = async () => {
-      // Overlap guard: never start a poll while the previous one is pending.
-      if (inFlight || cancelled) return
-      inFlight = true
-      controller = new AbortController()
-      const { signal } = controller
-
       try {
-        const payments = await api.listTransactions(token, 20, signal)
-        // Unmounted (or aborted) while the request was in flight — drop the result.
-        if (cancelled || signal.aborted) return
+        const payments = await api.listTransactions(token, 20)
+        if (!active) return
 
-        failures = 0
         const confirmedPayments = payments.filter((p: Payment) => p.status === 'confirmed')
 
         if (!initialFetchDone.current) {
@@ -71,35 +64,20 @@ export function usePaymentPoller(intervalMs = 30000) {
           }
         }
       } catch (err) {
-        if (cancelled || signal.aborted) return
-        // Silently catch polling errors to avoid disrupting the dashboard experience.
-        // Log only the first failure of a streak to avoid spamming the console.
-        failures += 1
-        if (failures === 1) {
-          console.error('[poller] Failed to fetch transactions:', err)
-        }
-      } finally {
-        inFlight = false
+        if (!active) return
+
+        // Silently catch polling errors to avoid disrupting the dashboard experience
+        console.error('[poller] Failed to fetch transactions:', err)
       }
     }
 
-    const scheduleNext = () => {
-      if (cancelled) return
-      // Exponential backoff while the backend keeps failing, reset on success.
-      const delay = Math.min(intervalMs * 2 ** failures, MAX_BACKOFF_MS)
-      timer = setTimeout(async () => {
-        await pollTransactions()
-        scheduleNext()
-      }, Math.max(delay, intervalMs))
-    }
-
-    // Poll immediately on mount/session change, then keep polling.
-    pollTransactions().finally(scheduleNext)
+    // Poll immediately on mount/session change, then set interval
+    pollTransactions()
+    const timer = setInterval(pollTransactions, intervalMs)
 
     return () => {
-      cancelled = true
-      if (timer) clearTimeout(timer)
-      controller?.abort()
+      active = false
+      clearInterval(timer)
     }
-  }, [session, intervalMs])
+  }, [session?.token, intervalMs])
 }

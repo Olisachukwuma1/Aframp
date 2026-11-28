@@ -36,10 +36,27 @@ This document describes all GitHub Actions workflows configured for the Aframp p
   baseline test suite, so a flat global threshold would either block every PR forever or,
   once softened, stop meaning anything; gating the diff is the realistic middle ground.
 
-#### Build
+#### Build (Testnet) — all branches
 
-- **Next.js Build** - Production build verification
-- **Artifact Upload** - Stores build for deployment
+- **Next.js Build** — production build with `NEXT_PUBLIC_STELLAR_NETWORK: TESTNET`
+- Runs on every push and PR (depends on Code Quality + Tests)
+
+#### Build (Mainnet) — PRs targeting `main` only
+
+- **Next.js Build** — production build with `NEXT_PUBLIC_STELLAR_NETWORK: MAINNET`
+- Also sets `NEXT_PUBLIC_CNGN_ISSUER` and `NEXT_PUBLIC_USDC_ISSUER` from repository secrets so that any env-var assertions or conditional imports that differ between networks are exercised at build time
+- Only runs when `github.base_ref == 'main'` — no extra latency for develop-branch work
+- Uses `NEXT_API_URL_MAINNET` (separate secret from the testnet URL)
+
+**Why two build jobs?**
+
+The TESTNET and MAINNET configurations differ in network name, Horizon URLs, and issuer
+addresses. A Next.js build can succeed with testnet stubs while silently failing when
+the corresponding mainnet values are injected — for example if a module asserts that an
+env var matches a known value, or if dead-code elimination removes a path that only
+matters in production. The `build-mainnet` job runs those same build-time checks against
+production-shaped env vars on every PR before it merges to `main`, catching
+environment-specific failures before they reach the release pipeline.
 
 **Duration:** ~10-15 minutes
 
@@ -109,15 +126,40 @@ the app actually hits them.
 
 ### 4. Uptime Monitor (`uptime-monitor.yml`)
 
-**Trigger:** Scheduled (configurable interval)
+**Trigger:** Every 5 minutes (cron) and manual (`workflow_dispatch`)
 
 **Purpose:** Monitors production deployment health
 
-**Checks:**
+**Checks** (each must return HTTP 200 within 10 seconds):
 
-- API endpoint availability
-- Response time monitoring
-- Error rate tracking
+- Homepage (`/`)
+- Login page (`/login`)
+- Wallet dashboard (`/wallet`)
+
+**Alerting:**
+
+- A run with any endpoint down fails, so GitHub sends a failed-workflow notification.
+- Three consecutive failing runs open a `🚨 AFRAMP production uptime alert` issue; the first healthy run closes it.
+- The failure count is kept in the Actions cache under `uptime-monitor-state-<run_id>-<run_attempt>`.
+
+**Monitored URL:** `https://aframp.vercel.app` (the public Vercel production alias) by default, as set in `uptime-monitor.yml`.
+
+> **Note:** The `PRODUCTION_URL` repository variable overrides this default. Set it under Settings → Secrets and variables → Actions → Variables (no trailing slash) to monitor another origin, such as the custom domain `https://app.aframp.com` once it is live, without a code change. A manual `workflow_dispatch` run can also pass a one-off `url` input, which takes precedence over both.
+
+**Prerequisite:** The monitored domain must resolve to the production deployment. Before pointing `PRODUCTION_URL` at `app.aframp.com`, add it under the Vercel project's Domains and create the DNS record Vercel asks for (see the `aframp.com` DNS provider). If the domain does not resolve, every run fails.
+
+---
+
+### 5. Release Please (`release.yml`)
+
+**Trigger:** Push to `main` or manual `workflow_dispatch`
+
+**Purpose:** Automates semantic version bumps, `CHANGELOG.md` updates, release PR creation, and GitHub Releases via `google-github-actions/release-please-action@v4`.
+
+**Required Repository Configuration (one of the following):**
+
+1. **Repository Actions Setting:** Enable **Settings → Actions → General → Workflow permissions → "Allow GitHub Actions to create and approve pull requests"** so `GITHUB_TOKEN` is permitted to open and update the release PR.
+2. **Fine-grained Personal Access Token (PAT):** Add a repository secret named `RELEASE_PLEASE_TOKEN` containing a fine-grained PAT scoped to this repository with **Contents** (`Read and write`), **Issues** (`Read and write`), and **Pull requests** (`Read and write`) permissions.
 
 ---
 
@@ -128,12 +170,16 @@ the app actually hits them.
 Set in GitHub repository settings → Secrets and variables:
 
 ```
-CODECOV_TOKEN           # Codecov integration
-NEXT_API_URL     # API endpoint
-NEXT_PUBLIC_STELLAR_NETWORK  # Stellar network
-VERCEL_TOKEN            # Vercel deployment
-VERCEL_ORG_ID           # Vercel organization
-VERCEL_PROJECT_ID       # Vercel project
+CODECOV_TOKEN                # Codecov integration
+NEXT_API_URL                 # API endpoint (testnet / non-prod)
+NEXT_API_URL_MAINNET         # API endpoint for the mainnet build job
+NEXT_PUBLIC_STELLAR_NETWORK  # Set per-job in ci.yml (TESTNET or MAINNET)
+MAINNET_CNGN_ISSUER          # cNGN issuer address for the mainnet build
+MAINNET_USDC_ISSUER          # USDC issuer address for the mainnet build
+RELEASE_PLEASE_TOKEN         # Optional fine-grained PAT for Release Please PR creation
+VERCEL_TOKEN                 # Vercel deployment
+VERCEL_ORG_ID                # Vercel organization
+VERCEL_PROJECT_ID            # Vercel project
 ```
 
 ### Concurrency Control
@@ -167,7 +213,7 @@ View workflow status in GitHub:
 Add to README:
 
 ```markdown
-[![CI](https://github.com/aframp/aframp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aframp/aframp/actions/workflows/ci.yml)
+[![CI](https://github.com/kellymusk/Aframp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kellymusk/Aframp/actions/workflows/ci.yml)
 ```
 
 ---
@@ -244,9 +290,17 @@ Tests ────────┘
 
 1. **Keep workflows simple** - One responsibility per job
 2. **Use caching** - Speed up dependency installation
-3. **Set timeouts** - Prevent hanging workflows
+3. **Set timeouts** - Every job sets `timeout-minutes` (5 for guards/comment jobs,
+   10 for lint/security/release, 15 for test/build/preview, 20 for E2E/Lighthouse)
+   so a hung step can't burn GitHub's 6-hour default
 4. **Monitor costs** - GitHub Actions has usage limits
 5. **Document changes** - Update this file when modifying workflows
+6. **Pin actions to commit SHAs** - Every `uses:` is pinned to a full 40-char
+   commit SHA with the release tag as a trailing comment
+   (`uses: actions/checkout@<sha> # v5.1.0`). Never use `@master`/`@main` or a
+   bare tag. Dependabot (`github-actions` ecosystem in `.github/dependabot.yml`)
+   opens a weekly grouped PR that rotates the pins; review the upstream release
+   notes/diff before merging. Pin any newly added action the same way.
 
 ---
 

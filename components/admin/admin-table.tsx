@@ -1,11 +1,19 @@
+'use client'
+
+import { useMemo, useState } from 'react'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
 import { ErrorState } from '@/components/ui/error-state'
 import { EmptyStateIllustration } from '@/components/ui/empty-state-illustration'
+import { downloadCsv, toCsv } from '@/lib/csv'
 
 interface Column<T> {
   header: string
   render: (row: T) => React.ReactNode
   className?: string
+  /** Plain-text value used when exporting this column to CSV; falls back to `header`. */
+  csvValue?: (row: T) => string | number | null | undefined
 }
 
 interface AdminTableProps<T> {
@@ -15,15 +23,20 @@ interface AdminTableProps<T> {
   error: string | null
   onRetry: () => void
   emptyMessage: string
-  page: number
-  pageSize: number
-  hasNextPage: boolean
-  onPageChange: (page: number) => void
+  /** Text a row is matched against by the search box; omit to hide search. */
+  searchText?: (row: T) => string
+  searchPlaceholder?: string
+  /** Base filename (without extension) for the CSV export. */
+  exportFilename?: string
 }
+
+const PAGE_SIZE = 25
 
 /**
  * Shared shell for every `/admin/*` list page: loading spinner, error state
- * with retry, empty state, or the current server-paginated page as a table.
+ * with retry, empty state, or the data as a table. Every admin list looks
+ * the same shape-wise (rows fetched once, no pagination yet), so this is the
+ * one place that shape is written.
  */
 export function AdminTable<T>({
   rows,
@@ -32,11 +45,28 @@ export function AdminTable<T>({
   error,
   onRetry,
   emptyMessage,
-  page,
-  pageSize,
-  hasNextPage,
-  onPageChange,
+  searchText,
+  searchPlaceholder = 'Search',
+  exportFilename = 'admin-export',
 }: AdminTableProps<T>) {
+  const [query, setQuery] = useState('')
+  const [visible, setVisible] = useState(PAGE_SIZE)
+
+  const matches = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!rows || !needle || !searchText) return rows ?? []
+    return rows.filter((row) => searchText(row).toLowerCase().includes(needle))
+  }, [rows, query, searchText])
+
+  const handleExport = () => {
+    const header = columns.map((col) => col.header)
+    const body = matches.map((row) =>
+      columns.map((col) => (col.csvValue ? (col.csvValue(row) ?? null) : ''))
+    )
+    const filename = exportFilename.endsWith('.csv') ? exportFilename : `${exportFilename}.csv`
+    downloadCsv(filename, toCsv(header, body))
+  }
+
   if (error) return <ErrorState message={error} onRetry={onRetry} />
 
   if (!rows) {
@@ -47,32 +77,7 @@ export function AdminTable<T>({
     )
   }
 
-  const pagination =
-    rows.length > 0 || page > 1 ? (
-      <div className="border-hairline flex items-center justify-between border-t px-4 py-3 text-sm">
-        <span className="text-dim">Page {page}</span>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => onPageChange(page - 1)}
-            disabled={page === 1}
-            className="border-hairline rounded-md border px-3 py-1.5 disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <button
-            type="button"
-            onClick={() => onPageChange(page + 1)}
-            disabled={!hasNextPage || rows.length < pageSize}
-            className="border-hairline rounded-md border px-3 py-1.5 disabled:opacity-40"
-          >
-            Next
-          </button>
-        </div>
-      </div>
-    ) : null
-
-  if (rows.length === 0 && page === 1) {
+  if (rows.length === 0) {
     return (
       <div className="mt-6 flex flex-col items-center gap-3 py-12 text-center">
         <EmptyStateIllustration variant="empty" className="size-20" />
@@ -81,18 +86,45 @@ export function AdminTable<T>({
     )
   }
 
-  if (rows.length === 0) {
-    return (
-      <div className="bg-panel border-hairline overflow-hidden rounded-2xl border">
-        <p className="text-dim px-4 py-8 text-center text-sm">No more records.</p>
-        {pagination}
-      </div>
-    )
-  }
+  const shown = matches.slice(0, visible)
 
   return (
-    <div className="bg-panel border-hairline overflow-hidden rounded-2xl border">
-      <div className="overflow-x-auto">
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {searchText ? (
+          <Input
+            type="search"
+            aria-label={searchPlaceholder}
+            placeholder={searchPlaceholder}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value)
+              setVisible(PAGE_SIZE)
+            }}
+            className="max-w-sm"
+          />
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-3">
+          {searchText && (
+            <p className="text-dim text-xs" aria-live="polite">
+              {matches.length === rows.length
+                ? `${rows.length.toLocaleString('en-NG')} rows`
+                : `${matches.length.toLocaleString('en-NG')} of ${rows.length.toLocaleString('en-NG')} rows`}
+            </p>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleExport}
+            disabled={matches.length === 0}
+          >
+            Export CSV
+          </Button>
+        </div>
+      </div>
+      <div className="bg-panel border-hairline overflow-x-auto rounded-2xl border">
         <table className="w-full text-left text-sm">
           <thead>
             <tr className="border-hairline text-dim border-b text-xs tracking-wide uppercase">
@@ -104,7 +136,7 @@ export function AdminTable<T>({
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {rows.map((row) => (
+            {shown.map((row) => (
               <tr key={getRowKey(row)} className="hover:bg-raised/50 transition-colors">
                 {columns.map((col) => (
                   <td key={col.header} className={col.className ?? 'px-4 py-3 whitespace-nowrap'}>
@@ -115,8 +147,20 @@ export function AdminTable<T>({
             ))}
           </tbody>
         </table>
+        {shown.length === 0 && (
+          <p className="text-dim px-4 py-8 text-center text-sm">No rows match “{query}”.</p>
+        )}
       </div>
-      {pagination}
+      {matches.length > shown.length && (
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          onClick={() => setVisible((count) => count + PAGE_SIZE)}
+        >
+          Show more ({(matches.length - shown.length).toLocaleString('en-NG')} left)
+        </Button>
+      )}
     </div>
   )
 }

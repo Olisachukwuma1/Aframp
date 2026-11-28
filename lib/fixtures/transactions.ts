@@ -1,121 +1,126 @@
-/**
- * Synthetic transaction fixtures for the dashboard Transaction History demo.
- * Not real payment data.
- */
-
 export type TransactionType = 'onramp' | 'offramp' | 'billpay'
 export type TransactionStatus = 'pending' | 'completed' | 'failed'
 
 export interface Transaction {
   id: string
-  /** ISO timestamp */
   date: string
   type: TransactionType
-  /** Amount in stroops (1 unit = 10^7 stroops), matching the bigint money model. */
-  amountStroops: bigint
+  amount: number
   asset: string
   counterparty: string
   status: TransactionStatus
 }
 
-export const STROOPS_PER_UNIT = BigInt(10_000_000)
-
-/** Assets that have a cash-out (offramp) route. */
-export const OFFRAMP_ASSETS = ['cNGN', 'cKES', 'cGHS'] as const
-
-/** Fixed reference "now" so fixtures are deterministic (SSR-safe, test-stable). */
-export const FIXTURE_NOW = Date.UTC(2026, 1, 26, 9, 0, 0)
-
-const MINUTE = 60_000
-
-/** Convert whole/fractional display units to stroops without float drift beyond 7dp. */
-export function unitsToStroops(units: number): bigint {
-  return BigInt(Math.round(units * 10_000_000))
-}
-
-/** Format stroops as a 2dp display string using integer math. */
-export function formatStroops(stroops: bigint): string {
-  const cents = (stroops + BigInt(50_000)) / BigInt(100_000) // round to 2dp
-  const whole = cents / BigInt(100)
-  const frac = (cents % BigInt(100)).toString().padStart(2, '0')
-  return `${whole.toLocaleString('en-US')}.${frac}`
-}
-
-function ago(minutes: number): string {
-  return new Date(FIXTURE_NOW - minutes * MINUTE).toISOString()
-}
+export type SortField = 'date' | 'type' | 'asset' | 'amount' | 'status'
+export type SortDirection = 'asc' | 'desc'
+export type QuickFilter = 'all' | 'onramp' | 'offramp' | 'billpay' | 'failed'
 
 export const mockTransactions: Transaction[] = [
   {
     id: 'ONR-240191',
-    date: ago(38),
+    date: '2026-02-26T08:22:00.000Z',
     type: 'onramp',
-    amountStroops: unitsToStroops(15000),
+    amount: 15000,
     asset: 'cNGN',
     counterparty: 'From Zenith Bank',
     status: 'completed',
   },
   {
+    id: 'OFF-240180',
+    date: '2026-02-26T07:40:00.000Z',
+    type: 'offramp',
+    amount: 8700,
+    asset: 'USDC',
+    counterparty: 'To MTN Mobile Money',
+    status: 'pending',
+  },
+  {
     id: 'BIL-240178',
-    date: ago(16 * 60 + 49),
+    date: '2026-02-25T16:11:00.000Z',
     type: 'billpay',
-    amountStroops: unitsToStroops(5500),
+    amount: 5500,
     asset: 'cNGN',
     counterparty: 'To IKEDC Electricity',
     status: 'completed',
   },
   {
     id: 'ONR-240173',
-    date: ago(21 * 60 + 25),
+    date: '2026-02-25T11:35:00.000Z',
     type: 'onramp',
-    amountStroops: unitsToStroops(25000),
+    amount: 25000,
     asset: 'cNGN',
     counterparty: 'From Access Bank',
     status: 'pending',
   },
   {
+    id: 'OFF-240166',
+    date: '2026-02-24T19:02:00.000Z',
+    type: 'offramp',
+    amount: 12000,
+    asset: 'USDT',
+    counterparty: 'To Kuda Bank',
+    status: 'completed',
+  },
+  {
     id: 'BIL-240162',
-    date: ago(47 * 60 + 17),
+    date: '2026-02-24T09:43:00.000Z',
     type: 'billpay',
-    amountStroops: unitsToStroops(2100),
+    amount: 2100,
     asset: 'cNGN',
     counterparty: 'To Glo Airtime',
     status: 'failed',
   },
   {
     id: 'ONR-240158',
-    date: ago(36 * 60 + 50),
+    date: '2026-02-23T20:10:00.000Z',
     type: 'onramp',
-    amountStroops: unitsToStroops(8000),
+    amount: 8000,
     asset: 'cNGN',
     counterparty: 'From GTBank',
     status: 'completed',
   },
   {
     id: 'BIL-240151',
-    date: ago(48 * 60 + 23),
+    date: '2026-02-23T08:37:00.000Z',
     type: 'billpay',
-    amountStroops: unitsToStroops(4300),
+    amount: 4300,
     asset: 'cNGN',
     counterparty: 'To DSTV',
     status: 'completed',
   },
   {
     id: 'OFF-240144',
-    date: ago(58 * 60 + 31),
+    date: '2026-02-22T22:29:00.000Z',
     type: 'offramp',
-    amountStroops: unitsToStroops(16000),
-    asset: 'cNGN',
+    amount: 16000,
+    asset: 'USDC',
     counterparty: 'To Opay Wallet',
     status: 'completed',
   },
   {
     id: 'ONR-240132',
-    date: ago(70 * 60 + 56),
+    date: '2026-02-22T10:04:00.000Z',
     type: 'onramp',
-    amountStroops: unitsToStroops(10000),
+    amount: 10000,
     asset: 'cNGN',
     counterparty: 'From Moniepoint',
     status: 'failed',
   },
+  {
+    id: 'OFF-240120',
+    date: '2026-02-21T14:18:00.000Z',
+    type: 'offramp',
+    amount: 7300,
+    asset: 'USDT',
+    counterparty: 'To First Bank',
+    status: 'completed',
+  },
+]
+
+export const quickFilters: Array<{ key: QuickFilter; label: string }> = [
+  { key: 'all', label: 'All' },
+  { key: 'onramp', label: 'Onramp' },
+  { key: 'offramp', label: 'Offramp' },
+  { key: 'billpay', label: 'Bill Pay' },
+  { key: 'failed', label: 'Failed' },
 ]

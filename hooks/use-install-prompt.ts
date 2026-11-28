@@ -2,105 +2,115 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-export const VISIT_COUNT_KEY = 'pwa:visit-count'
-export const DISMISSED_KEY = 'pwa:install-dismissed-at'
-const SESSION_KEY = 'pwa:visit-counted'
-/** Show the banner from this visit onward. */
-export const MIN_VISITS = 2
-/** After dismissal, wait this long before asking again. */
-export const DISMISS_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000
+const VISIT_COUNT_KEY = 'aframp.pwa-visit-count'
+const DISMISSED_KEY = 'aframp.pwa-install-dismissed'
+const MIN_VISITS_BEFORE_PROMPT = 2
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
 }
 
-type StoreName = 'local' | 'session'
+type Platform = 'android' | 'ios' | null
 
-function store(name: StoreName): Storage {
-  return name === 'local' ? window.localStorage : window.sessionStorage
-}
-
-function safeGet(name: StoreName, key: string): string | null {
+function readVisitCount(): number {
   try {
-    return store(name).getItem(key)
+    return Number(window.localStorage.getItem(VISIT_COUNT_KEY)) || 0
   } catch {
-    return null
+    return 0
   }
 }
 
-function safeSet(name: StoreName, key: string, value: string) {
+function writeVisitCount(count: number) {
   try {
-    store(name).setItem(key, value)
+    window.localStorage.setItem(VISIT_COUNT_KEY, String(count))
   } catch {
-    /* storage unavailable (private mode) */
+    // Best-effort only — a missed write just delays when the banner is eligible to show.
   }
 }
 
-function recordVisit(): number {
-  const current = parseInt(safeGet('local', VISIT_COUNT_KEY) ?? '0', 10) || 0
-  if (safeGet('session', SESSION_KEY)) return current
-  const next = current + 1
-  safeSet('local', VISIT_COUNT_KEY, String(next))
-  safeSet('session', SESSION_KEY, '1')
-  return next
+function readDismissed(): boolean {
+  try {
+    return window.localStorage.getItem(DISMISSED_KEY) === 'true'
+  } catch {
+    return false
+  }
 }
 
-function recentlyDismissed(): boolean {
-  const at = parseInt(safeGet('local', DISMISSED_KEY) ?? '', 10)
-  return Number.isFinite(at) && Date.now() - at < DISMISS_COOLDOWN_MS
+function writeDismissed() {
+  try {
+    window.localStorage.setItem(DISMISSED_KEY, 'true')
+  } catch {
+    // Best-effort only — a missed write just means the banner may reappear next visit.
+  }
 }
 
 function isStandalone(): boolean {
-  return (
-    window.matchMedia?.('(display-mode: standalone)')?.matches === true ||
-    (window.navigator as Navigator & { standalone?: boolean }).standalone === true
-  )
+  const nav = window.navigator as Navigator & { standalone?: boolean }
+  return window.matchMedia('(display-mode: standalone)').matches || nav.standalone === true
 }
 
-export function useInstallPrompt() {
-  const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(null)
-  const [visits, setVisits] = useState(0)
-  const [dismissed, setDismissed] = useState(false)
+function isIosSafari(): boolean {
+  const ua = window.navigator.userAgent
+  const isIos = /iPad|iPhone|iPod/.test(ua)
+  const isSafari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua)
+  return isIos && isSafari
+}
+
+interface InstallPromptState {
+  eligible: boolean
+  platform: Platform
+  install: () => Promise<void>
+  dismiss: () => void
+}
+
+/**
+ * iOS Safari never fires `beforeinstallprompt` — there is no such API in
+ * WebKit — so that platform is detected via UA instead and shown
+ * instructions rather than a native prompt.
+ */
+export function useInstallPrompt(): InstallPromptState {
+  const [deferredEvent, setDeferredEvent] = useState<BeforeInstallPromptEvent | null>(null)
+  const [platform, setPlatform] = useState<Platform>(null)
+  const [eligible, setEligible] = useState(false)
 
   useEffect(() => {
     if (isStandalone()) return
-    setVisits(recordVisit())
-    setDismissed(recentlyDismissed())
 
-    const onBeforeInstall = (e: Event) => {
-      e.preventDefault()
-      setDeferred(e as BeforeInstallPromptEvent)
-    }
-    const onInstalled = () => setDeferred(null)
+    const count = readVisitCount() + 1
+    writeVisitCount(count)
+    const dismissed = readDismissed()
+    const meetsVisitThreshold = count >= MIN_VISITS_BEFORE_PROMPT
 
-    window.addEventListener('beforeinstallprompt', onBeforeInstall)
-    window.addEventListener('appinstalled', onInstalled)
-    return () => {
-      window.removeEventListener('beforeinstallprompt', onBeforeInstall)
-      window.removeEventListener('appinstalled', onInstalled)
+    if (isIosSafari()) {
+      setPlatform('ios')
+      setEligible(meetsVisitThreshold && !dismissed)
     }
+
+    const handleBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault()
+      setDeferredEvent(event as BeforeInstallPromptEvent)
+      setPlatform('android')
+      setEligible(meetsVisitThreshold && !dismissed)
+    }
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
+    return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt)
   }, [])
 
   const install = useCallback(async () => {
-    if (!deferred) return
-    await deferred.prompt()
-    const { outcome } = await deferred.userChoice
-    setDeferred(null) // the event can only be used once
-    if (outcome === 'dismissed') {
-      safeSet('local', DISMISSED_KEY, String(Date.now()))
-      setDismissed(true)
-    }
-  }, [deferred])
+    if (!deferredEvent) return
+    await deferredEvent.prompt()
+    await deferredEvent.userChoice
+    setDeferredEvent(null)
+    writeDismissed()
+    setEligible(false)
+  }, [deferredEvent])
 
   const dismiss = useCallback(() => {
-    safeSet('local', DISMISSED_KEY, String(Date.now()))
-    setDismissed(true)
+    writeDismissed()
+    setEligible(false)
   }, [])
 
-  return {
-    canInstall: deferred !== null && visits >= MIN_VISITS && !dismissed,
-    install,
-    dismiss,
-  }
+  return { eligible, platform, install, dismiss }
 }

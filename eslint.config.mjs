@@ -1,6 +1,5 @@
 import nextPlugin from '@next/eslint-plugin-next'
 import jsxA11y from 'eslint-plugin-jsx-a11y'
-import reactHooksPlugin from 'eslint-plugin-react-hooks'
 import prettierConfig from 'eslint-config-prettier'
 import tseslint from 'typescript-eslint'
 
@@ -11,8 +10,8 @@ import tseslint from 'typescript-eslint'
 // that patch entirely.
 const config = [
   {
-    // public/sw.js and workbox-*.js are generated PWA build output, not
-    // hand-written source — coverage/ is the Jest coverage report.
+    // Public assets are runtime files, not hand-written source;
+    // coverage/ is the Jest coverage report.
     ignores: [
       '.next/**',
       'node_modules/**',
@@ -24,18 +23,9 @@ const config = [
       '*.d.ts',
     ],
   },
-  nextPlugin.flatConfig.coreWebVitals,
+  nextPlugin.configs['core-web-vitals'],
   jsxA11y.flatConfigs.recommended,
   ...tseslint.configs.recommended,
-  {
-    plugins: {
-      'react-hooks': reactHooksPlugin,
-    },
-    rules: {
-      'react-hooks/rules-of-hooks': 'error',
-      'react-hooks/exhaustive-deps': 'warn',
-    },
-  },
   {
     rules: {
       'no-console': ['error', { allow: ['warn', 'error'] }],

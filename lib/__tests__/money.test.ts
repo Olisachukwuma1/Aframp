@@ -1,6 +1,5 @@
 import {
   formatStroops,
-  formatStroopsPlain,
   isAmountMultipleOf,
   isWholeKobo,
   parseAmountToStroops,
@@ -20,7 +19,7 @@ describe('formatStroops', () => {
     expect(formatStroops(-25_000_000n)).toBe('-2.5')
   })
 
-  it('formats one negative unit', () => {
+  it('formats a negative whole unit', () => {
     expect(formatStroops(-10_000_000n)).toBe('-1')
   })
 
@@ -30,21 +29,6 @@ describe('formatStroops', () => {
 
   it('adds thousands separators to the whole part', () => {
     expect(formatStroops(12_345n * STROOPS_PER_UNIT)).toBe('12,345')
-  })
-
-  it('round-trips whole-unit values through formatStroops', () => {
-    const amounts = [0n, STROOPS_PER_UNIT, 999n * STROOPS_PER_UNIT]
-
-    for (const amount of amounts) {
-      expect(parseAmountToStroops(formatStroops(amount))).toBe(amount)
-    }
-  })
-
-  it('formats large values without grouping for parseable output', () => {
-    expect(formatStroopsPlain(12_345n * STROOPS_PER_UNIT)).toBe('12345')
-    expect(parseAmountToStroops(formatStroopsPlain(12_345n * STROOPS_PER_UNIT))).toBe(
-      12_345n * STROOPS_PER_UNIT
-    )
   })
 })
 
@@ -57,6 +41,10 @@ describe('parseAmountToStroops', () => {
     expect(parseAmountToStroops('2.5')).toBe(25_000_000n)
   })
 
+  it('parses all seven supported decimal places', () => {
+    expect(parseAmountToStroops('1.2345678')).toBe(12_345_678n)
+  })
+
   it('rejects more than 7 decimal places rather than rounding', () => {
     expect(parseAmountToStroops('1.12345678')).toBeNull()
   })
@@ -67,11 +55,11 @@ describe('parseAmountToStroops', () => {
     expect(parseAmountToStroops('.')).toBeNull()
   })
 
-  it('round-trips several stroop amounts through formatStroops', () => {
-    const amounts = [0n, 1n, 10_000_000n, 12_345_678n, 99_999_999n]
+  it('round-trips several stroop values through formatting', () => {
+    const values = [0n, 1n, STROOPS_PER_UNIT, 12_345_678n, 999_999_999n]
 
-    for (const amount of amounts) {
-      expect(parseAmountToStroops(formatStroops(amount))).toBe(amount)
+    for (const value of values) {
+      expect(parseAmountToStroops(formatStroops(value))).toBe(value)
     }
   })
 })

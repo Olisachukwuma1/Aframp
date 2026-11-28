@@ -6,29 +6,18 @@
  * is not 0.3, and this is a ledger.
  */
 
+import { APP_LOCALE } from '@/lib/locale'
+
 export const DECIMALS = 7
 export const STROOPS_PER_UNIT = 10_000_000n
 
 /** `25000000n` -> `"2.5"`. Trailing zeros in the fraction are dropped. */
-function formatStroopsWithWholeFormatter(
-  stroops: bigint,
-  formatWhole: (whole: bigint) => string
-): string {
+export function formatStroops(stroops: bigint): string {
   const negative = stroops < 0n
   const abs = negative ? -stroops : stroops
   const whole = abs / STROOPS_PER_UNIT
   const fraction = (abs % STROOPS_PER_UNIT).toString().padStart(DECIMALS, '0').replace(/0+$/, '')
-  return `${negative ? '-' : ''}${formatWhole(whole)}${fraction ? `.${fraction}` : ''}`
-}
-
-/** `25000000n` -> `"2.5"`, without thousands separators. */
-export function formatStroopsPlain(stroops: bigint): string {
-  return formatStroopsWithWholeFormatter(stroops, (whole) => whole.toString())
-}
-
-/** `formatStroops(123450000000n)` -> `"12,345"`. */
-export function formatStroops(stroops: bigint): string {
-  return formatStroopsWithWholeFormatter(stroops, (whole) => whole.toLocaleString('en-US'))
+  return `${negative ? '-' : ''}${whole.toLocaleString(APP_LOCALE)}${fraction ? `.${fraction}` : ''}`
 }
 
 /**
