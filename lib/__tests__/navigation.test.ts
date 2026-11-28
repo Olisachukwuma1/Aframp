@@ -1,22 +1,34 @@
-import { redirectTo } from '@/lib/navigation'
+import { redirectTo } from '../navigation'
 
-/**
- * `redirectTo` assigns to `window.location.href`, which jsdom refuses to
- * honour — it logs "not implemented" and drops the URL. So this test asserts
- * the assignment was *attempted* by watching for jsdom's navigation error,
- * and leaves the URL assertion to the callers, which mock this module.
- */
 describe('redirectTo', () => {
-  it('attempts to navigate away by assigning location.href', () => {
-    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {})
+  it('assigns the URL to window.location.href', () => {
+    // jsdom can't observe or perform cross-document navigation; it reports the
+    // attempt as "not implemented". Capture that to confirm the assignment ran.
+    const errors: string[] = []
+    const spy = jest.spyOn(console, 'error').mockImplementation((message: unknown) => {
+      errors.push(String(message))
+    })
 
-    redirectTo('https://payments.ozow.com/pay/abc123')
+    redirectTo('https://pay.ozow.com/initiate?token=abc')
 
-    // jsdom's virtual console emits this for any unhandled navigation.
-    const reportedNavigation = consoleError.mock.calls.some((args) =>
-      args.some((arg) => typeof arg === 'object' && arg !== null && 'type' in arg)
-    )
-    expect(reportedNavigation).toBe(true)
-    consoleError.mockRestore()
+    expect(errors.some((message) => /navigation/i.test(message))).toBe(true)
+    spy.mockRestore()
+  })
+
+  it.each([
+    'javascript:alert(1)',
+    'JaVaScRiPt:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'http://pay.ozow.com/initiate',
+    'https://user:pass@evil.example/',
+    '//evil.example/path',
+    '/relative/path',
+    'not a url',
+    '',
+  ])('throws and does not navigate for %p', (unsafe) => {
+    const spy = jest.spyOn(console, 'error').mockImplementation(() => {})
+    expect(() => redirectTo(unsafe)).toThrow(/redirectTo/)
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
   })
 })

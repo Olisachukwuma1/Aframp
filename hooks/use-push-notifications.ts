@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { captureError } from '@/lib/observability'
 
 const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? ''
 
@@ -41,9 +42,9 @@ export function usePushNotifications(): UsePushNotificationsReturn {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const swRef = useRef<ServiceWorkerRegistration | null>(null)
-  const permissionStatusRef = useRef<PermissionStatus | null>(null)
 
-  const isSupported = typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window
+  const isSupported =
+    typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window
 
   useEffect(() => {
     if (!isSupported) {
@@ -72,7 +73,7 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       })
       .catch((err) => {
         if (cancelled) return
-        console.error('[push] SW registration failed:', err)
+        captureError(err, { context: 'push', message: 'SW registration failed' })
         setError('Could not register push notifications')
       })
 
@@ -84,8 +85,6 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       navigator.permissions
         .query({ name: 'notifications' as PermissionName })
         .then((status) => {
-          if (cancelled) return
-          permissionStatusRef.current = status
           status.addEventListener('change', handler)
         })
         .catch(() => {
@@ -95,11 +94,6 @@ export function usePushNotifications(): UsePushNotificationsReturn {
 
     return () => {
       cancelled = true
-      // Clean up permission change listener
-      if (permissionStatusRef.current) {
-        permissionStatusRef.current.removeEventListener('change', handler)
-        permissionStatusRef.current = null
-      }
     }
   }, [isSupported])
 
@@ -108,13 +102,6 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       setError('Push notifications are not supported on this device.')
       return
     }
-
-    // Check if VAPID key is configured
-    if (!VAPID_PUBLIC_KEY) {
-      setError('Push notifications are not configured. Contact your administrator.')
-      return
-    }
-
     setLoading(true)
     setError(null)
 
@@ -155,7 +142,7 @@ export function usePushNotifications(): UsePushNotificationsReturn {
 
       setSubscribed(true)
     } catch (err) {
-      console.error('[push] Subscribe failed:', err)
+      captureError(err, { context: 'push', message: 'Subscribe failed' })
       setError(err instanceof Error ? err.message : 'Could not enable push notifications')
     } finally {
       setLoading(false)
@@ -176,7 +163,7 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       window.dispatchEvent(new CustomEvent('aframp:push-unsubscribe'))
       setSubscribed(false)
     } catch (err) {
-      console.error('[push] Unsubscribe failed:', err)
+      captureError(err, { context: 'push', message: 'Unsubscribe failed' })
       setError(err instanceof Error ? err.message : 'Could not disable push notifications')
     } finally {
       setLoading(false)

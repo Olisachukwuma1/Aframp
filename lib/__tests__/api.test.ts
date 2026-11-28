@@ -1,26 +1,20 @@
 import {
   ApiError,
   api,
+  isOffline,
   parseWithBigInts,
   request,
   setUnauthorizedHandler,
   stringifyWithBigInts,
 } from '@/lib/api'
-import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME, clearCsrfToken, writeCsrfToken } from '@/lib/csrf'
 
 const fetchMock = jest.fn()
 const originalFetch = globalThis.fetch
-
-/** The `X-CSRF-Token` header of a captured fetch call. */
-function csrfHeader(index = 0): string | undefined {
-  return fetchMock.mock.calls[index][1].headers[CSRF_HEADER_NAME]
-}
 
 beforeEach(() => {
   fetchMock.mockReset()
   globalThis.fetch = fetchMock as unknown as typeof fetch
   setUnauthorizedHandler(null)
-  clearCsrfToken()
 })
 
 afterEach(() => {
@@ -69,25 +63,10 @@ describe('parseWithBigInts', () => {
   })
 
   it('leaves non-bigint keys and string values untouched', () => {
-    const parsed = parseWithBigInts<{ asset: string; status: string; note: string; marker: string }>(
-      '{"asset":"cNGN","status":"pending","note":"amount_stroops: 123","marker":" bigint 9007199254740993 bigint "}'
+    const parsed = parseWithBigInts<{ asset: string; status: string; note: string }>(
+      '{"asset":"cNGN","status":"pending","note":"amount_stroops: 123"}'
     )
-    expect(parsed).toEqual({
-      asset: 'cNGN',
-      status: 'pending',
-      note: 'amount_stroops: 123',
-      marker: ' bigint 9007199254740993 bigint ',
-    })
-  })
-
-  it('revives tagged bigint objects without confusing strings', () => {
-    const parsed = parseWithBigInts<{ amount: bigint; text: string }>(
-      '{"amount":{"__bigint":"9007199254740993"},"text":"{\\"__bigint\\":\\"123\\"}"}'
-    )
-    expect(parsed).toEqual({
-      amount: 9007199254740993n,
-      text: '{"__bigint":"123"}',
-    })
+    expect(parsed).toEqual({ asset: 'cNGN', status: 'pending', note: 'amount_stroops: 123' })
   })
 })
 
@@ -95,12 +74,6 @@ describe('stringifyWithBigInts', () => {
   it('emits bigints as unquoted JSON integers', () => {
     expect(stringifyWithBigInts({ amount_stroops: 9007199254740993n })).toBe(
       '{"amount_stroops":9007199254740993}'
-    )
-  })
-
-  it('tags bigints outside registered wire keys', () => {
-    expect(stringifyWithBigInts({ arbitrary: 9007199254740993n })).toBe(
-      '{"arbitrary":{"__bigint":"9007199254740993"}}'
     )
   })
 
@@ -113,37 +86,8 @@ describe('stringifyWithBigInts', () => {
     expect(parseWithBigInts<typeof value>(stringifyWithBigInts(value))).toEqual(value)
   })
 
-  it('round-trips arbitrarily keyed bigints exactly', () => {
-    const value = { balanceAdjustment: 9007199254740993n, count: -42n }
-    expect(parseWithBigInts<typeof value>(stringifyWithBigInts(value))).toEqual(value)
-  })
-
   it('leaves plain JSON alone', () => {
     expect(stringifyWithBigInts({ asset: 'cNGN', n: 42 })).toBe('{"asset":"cNGN","n":42}')
-  })
-
-  it('does not collide with marker text inside strings', () => {
-    const value = {
-      amount_stroops: 9007199254740993n,
-      memo: 'quoted bigint marker: bigint 9007199254740993 bigint ',
-    }
-    expect(parseWithBigInts<typeof value>(stringifyWithBigInts(value))).toEqual(value)
-  })
-
-  it('does not rewrite a string containing a bigint key pattern', () => {
-    const value = {
-      amount_stroops: 9007199254740993n,
-      memo: 'The API quoted: "amount_stroops": 123',
-    }
-    expect(parseWithBigInts<typeof value>(stringifyWithBigInts(value))).toEqual(value)
-  })
-
-  it('preserves strings containing the bigint object shape', () => {
-    const value = {
-      amount_stroops: 9007199254740993n,
-      memo: 'Literal text: {"__bigint":"123"}',
-    }
-    expect(parseWithBigInts<typeof value>(stringifyWithBigInts(value))).toEqual(value)
   })
 })
 
@@ -153,6 +97,19 @@ describe('ApiError', () => {
     expect(error.name).toBe('ApiError')
     expect(error.message).toBe('boom')
     expect(error.status).toBe(500)
+  })
+})
+
+describe('isOffline', () => {
+  it('returns true for ApiError with status 0', () => {
+    expect(isOffline(new ApiError('network failed', 0))).toBe(true)
+  })
+
+  it('returns false for other status codes or error types', () => {
+    expect(isOffline(new ApiError('bad request', 400))).toBe(false)
+    expect(isOffline(new Error('general error'))).toBe(false)
+    expect(isOffline(null)).toBe(false)
+    expect(isOffline('string')).toBe(false)
   })
 })
 
@@ -170,14 +127,6 @@ describe('request', () => {
     await expect(request('/wallet')).resolves.toBeUndefined()
   })
 
-  it.each([' \n\t', '<html>Not JSON</html>'])(
-    'returns undefined for a 200 response with a non-JSON body (%j)',
-    async (body) => {
-      fetchMock.mockResolvedValue(new Response(body, { status: 200 }))
-      await expect(request<void>('/logout')).resolves.toBeUndefined()
-    }
-  )
-
   it('serializes bigint request bodies without rounding', async () => {
     fetchMock.mockResolvedValue(new Response('', { status: 200 }))
     await request('/withdraw', { method: 'POST', body: { amount_stroops: 9007199254740993n } })
@@ -185,7 +134,7 @@ describe('request', () => {
     expect(url).toBe('/backend/withdraw')
     expect(init.method).toBe('POST')
     expect(init.body).toBe('{"amount_stroops":9007199254740993}')
-    expect(init.headers['Content-Type']).toBe('application/json')
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' })
   })
 
   it('attaches Authorization only when a token is present', async () => {
@@ -220,23 +169,23 @@ describe('request', () => {
     })
   })
 
-  it('leaves bigint-looking text in JSON error bodies unchanged', async () => {
-    const memo = 'The API quoted: "amount_stroops": 123'
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ error: memo, code: 'quoted' }), { status: 400 })
-    )
-    await expect(request('/withdraw', { method: 'POST' })).rejects.toMatchObject({
-      message: memo,
-      code: 'quoted',
-      status: 400,
+  it('falls back to a status-code message for a non-JSON error body', async () => {
+    fetchMock.mockResolvedValue(new Response('<html>Not Found</html>', { status: 404 }))
+    await expect(request('/balance')).rejects.toMatchObject({
+      message: 'Request failed (404)',
+      status: 404,
     })
   })
 
-  it('falls back to a status-code message for a non-JSON error body', async () => {
-    fetchMock.mockResolvedValue(new Response('<html>Bad Gateway</html>', { status: 502 }))
+  it('never shows a 5xx body to the user', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ error: 'pq: relation "payments" does not exist' }), {
+        status: 500,
+      })
+    )
     await expect(request('/balance')).rejects.toMatchObject({
-      message: 'Request failed (502)',
-      status: 502,
+      message: 'Something went wrong on our end. Please try again in a moment.',
+      status: 500,
     })
   })
 
@@ -260,12 +209,12 @@ describe('request', () => {
 describe('api', () => {
   it('signup posts credentials and a phone number, and never gets a session back', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ challenge_id: 'chal-1', expires_in_secs: 600 }))
-    const result = await api.signup('a@b.c', 'pw', 'Name', '08011122233')
+    const result = await api.signup('a@b.c', 'pw', 'Name', '08011122233', 'v1')
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/backend/signup')
     expect(init.method).toBe('POST')
     expect(init.body).toBe(
-      '{"email":"a@b.c","password":"pw","name":"Name","phone_number":"08011122233"}'
+      '{"email":"a@b.c","password":"pw","name":"Name","phone_number":"08011122233","accepted_terms_version":"v1"}'
     )
     expect(result).toEqual({ challenge_id: 'chal-1', expires_in_secs: 600 })
   })
@@ -275,6 +224,40 @@ describe('api', () => {
     await api.login('a@b.c', 'pw')
     expect(fetchMock.mock.calls[0][0]).toBe('/backend/login')
     expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+  })
+
+  it('requestPasswordReset posts only the email', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ challenge_id: 'chal-9', expires_in_secs: 600 }))
+    const result = await api.requestPasswordReset('a@b.c')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/password-reset')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"email":"a@b.c"}')
+    expect(result.challenge_id).toBe('chal-9')
+  })
+
+  it('confirmPasswordReset posts the challenge, code and new password', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+    await api.confirmPasswordReset('chal-9', '482913', 'new-password-1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/password-reset/confirm')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(
+      '{"challenge_id":"chal-9","code":"482913","new_password":"new-password-1"}'
+    )
+  })
+
+  it('listSessions GETs /sessions and revokeSession DELETEs one by id', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([]))
+    await api.listSessions('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/sessions')
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer tok' })
+
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await api.revokeSession('tok', 's-1')
+    const [url, init] = fetchMock.mock.calls[1]
+    expect(url).toBe('/backend/sessions/s-1')
+    expect(init.method).toBe('DELETE')
   })
 
   it('verifyOtp posts the challenge id and code, not an email', async () => {
@@ -292,7 +275,7 @@ describe('api', () => {
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/backend/logout')
     expect(init.method).toBe('POST')
-    expect(init.headers.Authorization).toBe('Bearer tok')
+    expect(init.headers).toEqual({ Authorization: 'Bearer tok' })
   })
 
   it('getMe GETs /me with a token', async () => {
@@ -311,6 +294,20 @@ describe('api', () => {
     expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer tok' })
   })
 
+  it('getWallet GETs /wallet', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.getWallet('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/wallet')
+  })
+
+  it('getWallet forwards AbortSignal so in-flight requests can be cancelled', async () => {
+    const controller = new AbortController()
+    const abortError = new DOMException('The operation was aborted', 'AbortError')
+    fetchMock.mockRejectedValue(abortError)
+    await expect(api.getWallet('tok', controller.signal)).rejects.toBe(abortError)
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
+  })
+
   it('createWallet posts an empty body', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}))
     await api.createWallet('tok')
@@ -319,10 +316,12 @@ describe('api', () => {
     expect(fetchMock.mock.calls[0][1].body).toBe('{}')
   })
 
-  it('getWallet GETs /wallet', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.getWallet('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/wallet')
+  it('createWallet forwards AbortSignal so in-flight requests can be cancelled', async () => {
+    const controller = new AbortController()
+    const abortError = new DOMException('The operation was aborted', 'AbortError')
+    fetchMock.mockRejectedValue(abortError)
+    await expect(api.createWallet('tok', controller.signal)).rejects.toBe(abortError)
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal)
   })
 
   it('getBalances GETs /balance', async () => {
@@ -350,6 +349,16 @@ describe('api', () => {
     expect(fetchMock.mock.calls[0][1].body).toBe(
       '{"amount_stroops":5,"asset":"cNGN","expires_in_secs":3600}'
     )
+  })
+
+  it('cancelPaymentRequest posts to the cancel endpoint with the token', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'cancelled' }))
+    await api.cancelPaymentRequest('tok', 'req-1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/payment-requests/req-1/cancel')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toEqual({ Authorization: 'Bearer tok' })
+    expect(init.body).toBeUndefined()
   })
 
   it('listPaymentRequests builds the limit query', async () => {
@@ -387,33 +396,26 @@ describe('api', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/backend/withdrawals?limit=50')
   })
 
-  it('admin list methods request a server-side page of 25 by default', async () => {
-    const calls = [
-      [api.adminUsers, '/backend/admin/users'],
-      [api.adminMerchants, '/backend/admin/merchants'],
-      [api.adminWallets, '/backend/admin/wallets'],
-      [api.adminTransactions, '/backend/admin/transactions'],
-      [api.adminWithdrawals, '/backend/admin/withdrawals'],
-      [api.adminPaymentRequests, '/backend/admin/payment-requests'],
-    ] as const
-
-    for (const [method, endpoint] of calls) {
-      fetchMock.mockResolvedValueOnce(jsonResponse([]))
-      await method('tok')
-      expect(fetchMock.mock.calls.at(-1)?.[0]).toBe(`${endpoint}?page=1&page_size=25`)
-    }
+  it('createRefund posts refund request with body', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createRefund('tok', 'pay-1', 100n, 'GDEST123', 'Customer request')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/payments/pay-1/refund')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer tok',
+      'Idempotency-Key': expect.any(String),
+    })
+    expect(init.body).toBe(
+      '{"amount_stroops":100,"recipient":"GDEST123","reason":"Customer request"}'
+    )
   })
 
-  it('admin list methods accept an explicit page and page size', async () => {
+  it('listRefunds GETs /refunds with limit', async () => {
     fetchMock.mockResolvedValue(jsonResponse([]))
-    await api.adminUsers('tok', 3, 40)
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/users?page=3&page_size=40')
-  })
-
-  it('getBalances GETs /balance', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([]))
-    await api.getBalances('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/balance')
+    await api.listRefunds('tok', 25)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/refunds?limit=25')
   })
 
   it('listApiKeys GETs /api-keys', async () => {
@@ -422,241 +424,248 @@ describe('api', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/backend/api-keys')
   })
 
-  it('createApiKey posts the key name', async () => {
+  it('createApiKey posts name and scopes to /api-keys', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.createApiKey('tok', 'CI key')
+    await api.createApiKey('tok', 'My Key', { scopes: ['read'] })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/backend/api-keys')
     expect(init.method).toBe('POST')
-    expect(init.body).toBe('{"name":"CI key"}')
+    expect(init.body).toBe('{"name":"My Key","scopes":["read"]}')
   })
 
-  it('updateProfile posts only the provided fields', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.updateProfile('tok', { name: 'New Name' })
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('/backend/me')
-    expect(init.method).toBe('POST')
-    expect(init.body).toBe('{"name":"New Name"}')
-  })
-
-  it('changeEmail posts the new address', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.changeEmail('tok', 'new@example.com')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/me/email')
-    expect(fetchMock.mock.calls[0][1].body).toBe('{"new_email":"new@example.com"}')
-  })
-
-  it('createRefund posts the amount and recipient', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.createRefund('tok', 'pay-1', 5n, 'GABC')
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('/backend/payments/pay-1/refund')
-    expect(init.body).toBe('{"amount_stroops":5,"recipient":"GABC"}')
-  })
-
-  it('createRefund forwards an optional reason', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.createRefund('tok', 'pay-1', 5n, 'GABC', 'duplicate')
-    expect(fetchMock.mock.calls[0][1].body).toBe(
-      '{"amount_stroops":5,"recipient":"GABC","reason":"duplicate"}'
+  it('createApiKey rejects missing or empty scopes without a request', () => {
+    expect(() => api.createApiKey('tok', 'No scopes', undefined as never)).toThrow(
+      /at least one scope/
     )
-  })
-
-  it('listRefunds builds the limit query', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([]))
-    await api.listRefunds('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/refunds?limit=50')
-  })
-
-  it('listPaymentRequests builds the limit query', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([]))
-    await api.listPaymentRequests('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/payment-requests?limit=50')
-  })
-
-  it('getRemittanceFeeEstimate builds the estimate query', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.getRemittanceFeeEstimate('tok', 5n)
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      '/backend/remittance/estimate?amount_stroops=5&asset=XLM'
+    expect(() => api.createApiKey('tok', 'Empty scopes', { scopes: [] })).toThrow(
+      /at least one scope/
     )
-  })
-
-  it('createRemittance posts the destination and amount', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.createRemittance('tok', 'GABC', 5n)
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('/backend/remittance')
-    expect(init.body).toBe('{"destination_address":"GABC","amount_stroops":5,"asset":"XLM"}')
-  })
-
-  it('createRemittance forwards an optional memo', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.createRemittance('tok', 'GABC', 5n, 'XLM', 'invoice 1')
-    expect(fetchMock.mock.calls[0][1].body).toContain('"memo":"invoice 1"')
-  })
-
-  it('listRemittances builds the limit query', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([]))
-    await api.listRemittances('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/remittances?limit=50')
-  })
-
-  it('createOzowPayment posts the amount, bank and return URL', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.createOzowPayment('tok', 250, 'FNB', 'https://app.aframp.com/charge')
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe('/backend/onramp/ozow/initiate')
-    expect(init.method).toBe('POST')
-    expect(init.body).toBe(
-      '{"amount":250,"bank_code":"FNB","return_url":"https://app.aframp.com/charge"}'
-    )
-  })
-
-  it('verifyOzowPayment GETs the transaction status', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.verifyOzowPayment('tok', 'txn-1')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/onramp/ozow/verify/txn-1')
-  })
-
-  it('registerPushSubscription posts the subscription', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.registerPushSubscription('tok', {
-      endpoint: 'https://push.example/1',
-      p256dh: 'key',
-      auth: 'auth',
-    })
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/push/subscribe')
-  })
-
-  it('unregisterPushSubscription DELETEs the subscription', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await api.unregisterPushSubscription('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/push/unsubscribe')
-    expect(fetchMock.mock.calls[0][1].method).toBe('DELETE')
-  })
-
-  it('getPushSubscriptionStatus GETs the status', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ enabled: true }))
-    await api.getPushSubscriptionStatus('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe('/backend/push/status')
-  })
-
-  it.each([
-    ['adminOverview', '/backend/admin/overview'],
-    ['adminUsers', '/backend/admin/users?limit=100'],
-    ['adminMerchants', '/backend/admin/merchants?limit=100'],
-    ['adminWallets', '/backend/admin/wallets?limit=100'],
-    ['adminTransactions', '/backend/admin/transactions?limit=100'],
-    ['adminWithdrawals', '/backend/admin/withdrawals?limit=100'],
-    ['adminPaymentRequests', '/backend/admin/payment-requests?limit=100'],
-  ])('%s GETs %s', async (method, url) => {
-    fetchMock.mockResolvedValue(jsonResponse([]))
-    await (api[method as 'adminOverview'] as (token: string) => Promise<unknown>)('tok')
-    expect(fetchMock.mock.calls[0][0]).toBe(url)
-  })
-})
-
-describe('CSRF token inclusion', () => {
-  it('sends a token on a POST', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await request('/withdraw', { method: 'POST', body: {} })
-    expect(csrfHeader()).toEqual(expect.any(String))
-  })
-
-  it('sends a token on a DELETE', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await request('/me', { method: 'DELETE' })
-    expect(csrfHeader()).toEqual(expect.any(String))
-  })
-
-  it('omits the token on a GET, so it never leaks into a referrer or a log', async () => {
-    fetchMock.mockResolvedValue(jsonResponse([]))
-    await request('/balance')
-    expect(csrfHeader()).toBeUndefined()
-  })
-
-  it('echoes back exactly what the SameSite=Strict cookie holds', async () => {
-    writeCsrfToken('the-cookie-value')
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await request('/withdraw', { method: 'POST', body: {} })
-    // The two halves of the double submit have to agree, or middleware.ts
-    // answers 403 — this is the assertion that catches a divergence.
-    expect(csrfHeader()).toBe('the-cookie-value')
-  })
-
-  it('mints and persists a token when the cookie jar has none', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await request('/withdraw', { method: 'POST', body: {} })
-    const token = csrfHeader()
-    expect(token).toBeDefined()
-    expect(document.cookie).toContain(`${CSRF_COOKIE_NAME}=${token}`)
-  })
-
-  it('reuses the same token across consecutive mutations', async () => {
-    // A fresh Response per call — a body can only be read once.
-    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})))
-    await request('/withdraw', { method: 'POST', body: {} })
-    await request('/remittance', { method: 'POST', body: {} })
-    expect(csrfHeader(0)).toBe(csrfHeader(1))
-  })
-
-  it('stamps every mutating api call site, not just a representative one', async () => {
-    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})))
-    await api.createPaymentRequest('tok', 5n)
-    await api.createWithdrawal('tok', 5n, '044', '0123456789')
-    await api.createOzowPayment('tok', 100, 'FNB', 'https://app.aframp.com/charge')
-    await api.revokeApiKey('tok', 'key-1')
-    await api.deleteAccount('tok')
-    await api.logout('tok')
-    for (const index of [0, 1, 2, 3, 4, 5]) {
-      expect(csrfHeader(index)).toEqual(expect.any(String))
-    }
-  })
-
-  it('does not stamp read-only calls', async () => {
-    fetchMock.mockImplementation(() => Promise.resolve(jsonResponse([])))
-    await api.listTransactions('tok')
-    await api.getMe('tok')
-    await api.listWithdrawals('tok')
-    for (const index of [0, 1, 2]) {
-      expect(csrfHeader(index)).toBeUndefined()
-    }
-  })
-
-  it('sends the request same-origin, so a cross-origin cookie is never attached', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({}))
-    await request('/withdraw', { method: 'POST', body: {} })
-    expect(fetchMock.mock.calls[0][1].credentials).toBe('same-origin')
-  })
-
-  it('surfaces a 403 from the CSRF gate as a normal ApiError', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ error: 'CSRF validation failed.' }, 403))
-    await expect(request('/withdraw', { method: 'POST', body: {} })).rejects.toMatchObject({
-      status: 403,
-      message: 'CSRF validation failed.',
-    })
-  })
-})
-
-describe('query/path encoding', () => {
-  beforeEach(() => fetchMock.mockResolvedValue(jsonResponse({})))
-
-  it('rejects asset codes that could inject query parameters', () => {
-    for (const bad of ['XLM&amount_stroops=1', 'a=b', 'X#Y', 'X LM', '', 'A'.repeat(17)]) {
-      expect(() => api.getRemittanceFeeEstimate('t', 1n, bad)).toThrow(ApiError)
-    }
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('sends a valid asset in the query string', async () => {
-    await api.getRemittanceFeeEstimate('t', 5n, 'cNGN')
-    expect(fetchMock.mock.calls[0][0]).toMatch(/\/remittance\/estimate\?amount_stroops=5&asset=cNGN$/)
+  it('createApiKey sends scopes and expiry when given', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createApiKey('tok', 'Reporting', {
+      scopes: ['read'],
+      expiresAt: '2027-01-01T00:00:00.000Z',
+    })
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'Reporting',
+      scopes: ['read'],
+      expires_at: '2027-01-01T00:00:00.000Z',
+    })
   })
 
-  it('encodes ids interpolated into paths', async () => {
-    await api.getPaymentRequest('a/b?c')
-    expect(fetchMock.mock.calls[0][0]).toMatch(/\/payment-requests\/a%2Fb%3Fc$/)
+  it('revokeApiKey sends DELETE to /api-keys/:id', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+    await api.revokeApiKey('tok', 'key-uuid-1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/api-keys/key-uuid-1')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('updateProfile posts to /me', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.updateProfile('tok', { name: 'Alice', merchant_name: 'Alice Store' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/me')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"name":"Alice","merchant_name":"Alice Store"}')
+  })
+
+  it('changeEmail posts new_email to /me/email', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ message: 'verification sent' }))
+    await api.changeEmail('tok', 'new@example.com')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/me/email')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"new_email":"new@example.com"}')
+  })
+
+  it('deleteAccount sends DELETE to /me', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ message: 'account deleted' }))
+    await api.deleteAccount('tok')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/me')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('registerPushSubscription posts subscription to /push/subscribe', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.registerPushSubscription('tok', {
+      endpoint: 'https://push.example.com',
+      p256dh: 'p256',
+      auth: 'authKey',
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/push/subscribe')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(
+      '{"endpoint":"https://push.example.com","p256dh":"p256","auth":"authKey"}'
+    )
+  })
+
+  it('unregisterPushSubscription sends DELETE to /push/unsubscribe', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+    await api.unregisterPushSubscription('tok')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/push/unsubscribe')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('getPushSubscriptionStatus GETs /push/status', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ enabled: true }))
+    const res = await api.getPushSubscriptionStatus('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/push/status')
+    expect(res).toEqual({ enabled: true })
+  })
+
+  it('getRemittanceFeeEstimate GETs /remittance/estimate with query params', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ fee_stroops: 10, network_fee_stroops: 1, total_stroops: 11 })
+    )
+    await api.getRemittanceFeeEstimate('tok', 500n, 'XLM')
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      '/backend/remittance/estimate?amount_stroops=500&asset=XLM'
+    )
+  })
+
+  it('createRemittance posts to /remittance', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}))
+    await api.createRemittance('tok', 'GDEST123', 500n, 'XLM', 'Invoice #12')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/remittance')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe(
+      '{"destination_address":"GDEST123","amount_stroops":500,"asset":"XLM","memo":"Invoice #12"}'
+    )
+  })
+
+  describe('idempotency keys on money-moving POSTs', () => {
+    const keyOf = (call: number) => fetchMock.mock.calls[call][1].headers['Idempotency-Key']
+
+    it('sends an Idempotency-Key on withdrawals, sends, refunds and charges', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})))
+      await api.createWithdrawal('tok-a', 1n, '044', '0123456789')
+      await api.createRemittance('tok-a', 'GDEST', 2n)
+      await api.createRefund('tok-a', 'pay-1', 3n, 'GDEST')
+      await api.createPaymentRequest('tok-a', 4n)
+      for (let i = 0; i < 4; i++) expect(typeof keyOf(i)).toBe('string')
+      expect(new Set([0, 1, 2, 3].map(keyOf)).size).toBe(4)
+    })
+
+    it('reuses the key when the same intent is retried after an unknown outcome', async () => {
+      fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      await expect(api.createWithdrawal('tok-b', 5n, '044', '0123456789')).rejects.toBeInstanceOf(
+        ApiError
+      )
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 503))
+      await expect(api.createWithdrawal('tok-b', 5n, '044', '0123456789')).rejects.toBeInstanceOf(
+        ApiError
+      )
+      fetchMock.mockResolvedValueOnce(jsonResponse({}))
+      await api.createWithdrawal('tok-b', 5n, '044', '0123456789')
+
+      expect(keyOf(1)).toBe(keyOf(0))
+      expect(keyOf(2)).toBe(keyOf(0))
+    })
+
+    it('uses a fresh key after a success or a definite rejection', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({}))
+      await api.createRemittance('tok-c', 'GDEST', 7n)
+      fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'Invalid address' }, 400))
+      await expect(api.createRemittance('tok-c', 'GDEST', 7n)).rejects.toBeInstanceOf(ApiError)
+      fetchMock.mockResolvedValueOnce(jsonResponse({}))
+      await api.createRemittance('tok-c', 'GDEST', 7n)
+
+      expect(keyOf(1)).not.toBe(keyOf(0))
+      expect(keyOf(2)).not.toBe(keyOf(1))
+    })
+  })
+
+  describe('saved contacts', () => {
+    it('lists, creates, updates and deletes contacts through /contacts', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(jsonResponse({})))
+      await api.listSavedContacts('tok')
+      await api.createSavedContact('tok', { name: 'Ada', address: 'GDEST' })
+      await api.updateSavedContact('tok', 'c-1', { name: 'Ada L.' })
+      await api.deleteSavedContact('tok', 'c-1')
+
+      const calls = fetchMock.mock.calls.map(([url, init]) => [init.method ?? 'GET', url])
+      expect(calls).toEqual([
+        ['GET', '/backend/contacts'],
+        ['POST', '/backend/contacts'],
+        ['PUT', '/backend/contacts/c-1'],
+        ['DELETE', '/backend/contacts/c-1'],
+      ])
+      expect(fetchMock.mock.calls[1][1].body).toBe('{"name":"Ada","address":"GDEST"}')
+    })
+  })
+
+  it('listRemittances GETs /remittances with limit', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.listRemittances('tok', 30)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/remittances?limit=30')
+  })
+
+  it('createOzowPayment posts initiate details', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ payment_url: 'https://ozow.test', transaction_id: 'tx-1' })
+    )
+    await api.createOzowPayment('tok', 150, 'ABSA', 'https://return.test')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/backend/onramp/ozow/initiate')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBe('{"amount":150,"bank_code":"ABSA","return_url":"https://return.test"}')
+  })
+
+  it('verifyOzowPayment GETs /onramp/ozow/verify/:id', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ status: 'completed' }))
+    const res = await api.verifyOzowPayment('tok', 'tx-1')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/onramp/ozow/verify/tx-1')
+    expect(res).toEqual({ status: 'completed' })
+  })
+
+  it('adminOverview GETs /admin/overview', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ total_users: 10 }))
+    await api.adminOverview('tok')
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/overview')
+  })
+
+  it('adminUsers GETs /admin/users with limit', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.adminUsers('tok', 50)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/users?limit=50')
+  })
+
+  it('adminMerchants GETs /admin/merchants with limit', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.adminMerchants('tok', 50)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/merchants?limit=50')
+  })
+
+  it('adminWallets GETs /admin/wallets with limit', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.adminWallets('tok', 50)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/wallets?limit=50')
+  })
+
+  it('adminTransactions GETs /admin/transactions with limit', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.adminTransactions('tok', 50)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/transactions?limit=50')
+  })
+
+  it('adminWithdrawals GETs /admin/withdrawals with limit', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.adminWithdrawals('tok', 50)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/withdrawals?limit=50')
+  })
+
+  it('adminPaymentRequests GETs /admin/payment-requests with limit', async () => {
+    fetchMock.mockResolvedValue(jsonResponse([]))
+    await api.adminPaymentRequests('tok', 50)
+    expect(fetchMock.mock.calls[0][0]).toBe('/backend/admin/payment-requests?limit=50')
   })
 })

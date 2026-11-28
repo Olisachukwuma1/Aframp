@@ -1,68 +1,91 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
 import { ErrorState } from '@/components/ui/error-state'
 import { EmptyStateIllustration } from '@/components/ui/empty-state-illustration'
-import { api, ApiError, type Balance, type Payment, type Refund } from '@/lib/api'
-import { exportPaymentsToCSV } from '@/lib/export'
-import { formatStroops, formatStroopsPlain } from '@/lib/money'
-import { paymentStatusLabel, paymentStatusVariant } from '@/lib/payment-status'
+import { api, ApiError, type Payment, type PaymentStatus, type Refund } from '@/lib/api'
+import { formatStroops, parseAmountToStroops } from '@/lib/money'
+import {
+  filterByDateRange,
+  filterPaymentsByDateRange,
+  filterPaymentsByStatus,
+  searchPayments,
+  searchRefunds,
+} from '@/lib/transaction-filters'
 import { useAuthenticatedSession } from '@/components/session-provider'
-import { getStellarTransactionUrl } from '@/lib/stellar-network'
+import { formatDateTime } from '@/lib/format-date'
+import { PAYMENT_STATUS_LABEL, paymentStatusVariant } from '@/lib/payment-status'
+import { downloadCsv, toCsv } from '@/lib/csv'
 
-function matchesSearch(payment: Payment, query: string): boolean {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return true
-  const haystack = [payment.tx_hash, payment.wallet_address, payment.asset]
-  return haystack.some((value) => typeof value === 'string' && value.toLowerCase().includes(needle))
-}
+const EXPLORER_BASE = `https://stellar.expert/explorer/${
+  process.env.NEXT_PUBLIC_STELLAR_NETWORK === 'PUBLIC' ? 'public' : 'testnet'
+}/tx`
 
-function formatWhen(iso: string): string {
-  return new Date(iso).toLocaleString('en-NG', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
+const STATUS_LABEL = PAYMENT_STATUS_LABEL
 
-function downloadPaymentsCsv(payments: Payment[]): void {
-  const blob = new Blob([exportPaymentsToCSV(payments)], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `aframp-transactions-${new Date().toISOString().slice(0, 10)}.csv`
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
+const FILTERABLE_STATUSES: PaymentStatus[] = ['detected', 'verified', 'confirmed', 'failed']
+
+function DebouncedSearchInput({ onSearch }: { onSearch: (query: string) => void }) {
+  const [query, setQuery] = useState('')
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => onSearch(query), 250)
+    return () => window.clearTimeout(timeout)
+  }, [onSearch, query])
+
+  return (
+    <Input
+      id="transaction-search"
+      type="search"
+      placeholder="Hash, wallet, payment ID, recipient, or asset"
+      value={query}
+      onChange={(event) => setQuery(event.target.value)}
+    />
+  )
 }
 
 export default function TransactionsPage() {
   const { token } = useAuthenticatedSession()
   const [payments, setPayments] = useState<Payment[] | null>(null)
-  const [limit, setLimit] = useState(50)
-  const [balances, setBalances] = useState<Balance[]>([])
   const [refunds, setRefunds] = useState<Refund[]>([])
   const [refundingId, setRefundingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
+  const [refundNotice, setRefundNotice] = useState<string | null>(null)
+  const [refundDialogOpen, setRefundDialogOpen] = useState(false)
+  const [refundTarget, setRefundTarget] = useState<Payment | null>(null)
+  const [refundAmount, setRefundAmount] = useState('')
+  const [refundRecipient, setRefundRecipient] = useState('')
+  const [refundReason, setRefundReason] = useState('')
+  const [refundFormError, setRefundFormError] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<PaymentStatus | 'all'>('all')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState('')
 
   const load = useCallback(
-    async (signal?: AbortSignal, l: number = limit) => {
+    async (signal?: AbortSignal) => {
       setError(null)
       try {
-        const [nextPayments, nextBalances, nextRefunds] = await Promise.all([
-          api.listTransactions(token, l, signal),
-          api.getBalances(token, signal),
+        const [nextPayments, nextRefunds] = await Promise.all([
+          api.listTransactions(token, 50, signal),
           api.listRefunds(token, 20, signal),
         ])
         setPayments(nextPayments)
-        setBalances(nextBalances)
         setRefunds(nextRefunds)
       } catch (cause) {
         if (cause instanceof DOMException && cause.name === 'AbortError') return
@@ -73,33 +96,77 @@ export default function TransactionsPage() {
         setError(cause instanceof Error ? cause.message : 'Could not load your payments')
       }
     },
-    [token, limit]
+    [token]
   )
 
-  const handleRefund = useCallback(
-    async (payment: Payment) => {
-      const confirmed = window.confirm(
-        `Refund ${formatStroopsPlain(payment.amount_stroops)} ${payment.asset} to ${payment.wallet_address}?`
-      )
-      if (!confirmed) return
+  const openRefundDialog = useCallback((payment: Payment) => {
+    setRefundTarget(payment)
+    setRefundAmount('')
+    setRefundRecipient(payment.wallet_address)
+    setRefundReason('')
+    setRefundFormError(null)
+    setRefundDialogOpen(true)
+  }, [])
 
-      setRefundingId(payment.id)
+  const handleRefund = useCallback(
+    async (event: React.FormEvent) => {
+      event.preventDefault()
+      if (!refundTarget) return
+
+      const cleanedAmount = refundAmount.trim()
+      const cleanedRecipient = refundRecipient.trim()
+      const cleanedReason = refundReason.trim()
+      const amountStroops = parseAmountToStroops(cleanedAmount)
+
+      if (!cleanedAmount || !amountStroops) {
+        setRefundFormError('Enter a valid refund amount.')
+        return
+      }
+
+      if (amountStroops <= 0n) {
+        setRefundFormError('Refund amount must be greater than zero.')
+        return
+      }
+
+      if (amountStroops > refundTarget.amount_stroops) {
+        setRefundFormError('Refund amount cannot exceed the original payment amount.')
+        return
+      }
+
+      if (!cleanedRecipient) {
+        setRefundFormError('Recipient address is required.')
+        return
+      }
+
+      setRefundingId(refundTarget.id)
+      setRefundFormError(null)
       try {
         const refund = await api.createRefund(
           token,
-          payment.id,
-          payment.amount_stroops,
-          payment.wallet_address,
-          'merchant refund'
+          refundTarget.id,
+          amountStroops,
+          cleanedRecipient,
+          cleanedReason || undefined
         )
+        setRefundNotice(
+          `Refund requested successfully for ${formatStroops(refund.amount_stroops)} ${refund.asset}.`
+        )
+        setRefundDialogOpen(false)
+        setRefundTarget(null)
+        setRefundAmount('')
+        setRefundRecipient('')
+        setRefundReason('')
         setRefunds((current) => [refund, ...current])
+        await load()
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : 'Could not create the refund request')
+        setRefundFormError(
+          cause instanceof Error ? cause.message : 'Could not create the refund request'
+        )
       } finally {
         setRefundingId(null)
       }
     },
-    [token]
+    [load, refundAmount, refundRecipient, refundReason, refundTarget, token]
   )
 
   useEffect(() => {
@@ -107,6 +174,33 @@ export default function TransactionsPage() {
     void load(controller.signal)
     return () => controller.abort()
   }, [load])
+
+  const filteredPayments = useMemo(() => {
+    if (!payments) return []
+    const searched = searchPayments(payments, searchQuery)
+    const statusFiltered = filterPaymentsByStatus(searched, statusFilter)
+    return filterPaymentsByDateRange(statusFiltered, fromDate, toDate)
+  }, [payments, searchQuery, statusFilter, fromDate, toDate])
+
+  const filteredRefunds = useMemo(() => {
+    const searched = searchRefunds(refunds, searchQuery)
+    return filterByDateRange(searched, fromDate, toDate)
+  }, [refunds, searchQuery, fromDate, toDate])
+
+  const exportCsv = () => {
+    const csv = toCsv(
+      ['Date', 'Amount', 'Asset', 'Status', 'Transaction hash', 'From wallet'],
+      filteredPayments.map((payment) => [
+        payment.created_at,
+        formatStroops(payment.amount_stroops).replace(/,/g, ''),
+        payment.asset,
+        STATUS_LABEL[payment.status] ?? payment.status,
+        payment.tx_hash,
+        payment.wallet_address,
+      ])
+    )
+    downloadCsv(`aframp-payments-${new Date().toISOString().slice(0, 10)}.csv`, csv)
+  }
 
   if (error)
     return (
@@ -127,48 +221,69 @@ export default function TransactionsPage() {
     )
   }
 
-  const visiblePayments = payments.filter((payment) => matchesSearch(payment, search))
-
   return (
     <div>
       <header className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-2xl font-bold tracking-tight">Payments</h1>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={payments.length === 0}
-            onClick={() => downloadPaymentsCsv(payments)}
-          >
-            <Download className="mr-2 size-4" aria-hidden="true" />
-            Export CSV
-          </Button>
+          {filteredPayments.length > 0 && (
+            <Button type="button" variant="outline" size="sm" onClick={exportCsv}>
+              <Download className="size-4" aria-hidden />
+              Export CSV
+            </Button>
+          )}
         </div>
-        <input
-          type="search"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search by reference, hash, wallet address or asset"
-          aria-label="Search payments"
-          className="border-hairline bg-panel w-full rounded-2xl border px-4 py-2 text-sm"
-        />
-        {balances.length > 0 && (
-          <ul className="grid gap-2 sm:grid-cols-2">
-            {balances.map((balance) => (
-              <li
-                key={balance.asset}
-                className="bg-panel border-hairline flex items-baseline justify-between rounded-2xl border px-4 py-3"
-              >
-                <span className="text-dim text-sm">{balance.asset} available</span>
-                <span className="text-lg font-bold tabular-nums">
-                  {formatStroops(balance.available)}
-                </span>
-              </li>
-            ))}
-          </ul>
+        {refundNotice && (
+          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
+            {refundNotice}
+          </div>
         )}
       </header>
+
+      {payments.length > 0 && (
+        <div className="mt-6 grid gap-3 sm:grid-cols-4">
+          <div className="space-y-1 sm:col-span-2">
+            <Label htmlFor="transaction-search">Search</Label>
+            <DebouncedSearchInput onSearch={setSearchQuery} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="transaction-status">Payment status</Label>
+            <select
+              id="transaction-status"
+              className="border-hairline bg-panel h-9 w-full rounded-md border px-2 text-sm"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as PaymentStatus | 'all')}
+            >
+              <option value="all">All</option>
+              {FILTERABLE_STATUSES.map((status) => (
+                <option key={status} value={status}>
+                  {STATUS_LABEL[status]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="transaction-from">From</Label>
+              <Input
+                id="transaction-from"
+                type="date"
+                value={fromDate}
+                onChange={(event) => setFromDate(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="transaction-to">To</Label>
+              <Input
+                id="transaction-to"
+                type="date"
+                value={toDate}
+                onChange={(event) => setToDate(event.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {payments.length === 0 ? (
         <div className="mt-6 flex flex-col items-center gap-3 py-12 text-center">
@@ -177,23 +292,18 @@ export default function TransactionsPage() {
             No payments yet. Charge a customer and they&apos;ll show up here.
           </p>
         </div>
-      ) : visiblePayments.length === 0 ? (
-        <div className="mt-6 flex flex-col items-center gap-3 py-12 text-center">
-          <EmptyStateIllustration variant="empty" className="size-20" />
-          <p className="text-dim text-sm">No payments match “{search}”.</p>
-        </div>
       ) : (
         <ul className="border-hairline mt-6 divide-y">
-          {visiblePayments.map((payment) => (
+          {filteredPayments.map((payment) => (
             <li key={payment.id} className="flex items-center justify-between gap-3 py-3">
               <div className="min-w-0 space-y-1">
                 <p className="text-base font-bold tabular-nums text-white">
                   {formatStroops(payment.amount_stroops)} {payment.asset}
                 </p>
                 <p className="text-dim text-xs">
-                  {formatWhen(payment.created_at)} ·{' '}
+                  {formatDateTime(payment.created_at)} ·{' '}
                   <a
-                    href={getStellarTransactionUrl(payment.tx_hash)}
+                    href={`${EXPLORER_BASE}/${payment.tx_hash}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="hover:text-bright underline underline-offset-2"
@@ -206,37 +316,109 @@ export default function TransactionsPage() {
                 {payment.status === 'confirmed' && (
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    onClick={() => void handleRefund(payment)}
+                    className="text-dim"
+                    onClick={() => openRefundDialog(payment)}
                     disabled={refundingId === payment.id}
                   >
                     {refundingId === payment.id ? 'Refunding…' : 'Refund'}
                   </Button>
                 )}
-                <Badge variant={paymentStatusVariant(payment.status)}>
-                  {paymentStatusLabel(payment.status)}
+                <Badge
+                  variant={paymentStatusVariant(payment.status)}
+                  role="status"
+                  aria-live="polite"
+                  aria-label={`Payment status: ${STATUS_LABEL[payment.status] ?? payment.status}`}
+                >
+                  {STATUS_LABEL[payment.status] ?? payment.status}
                 </Badge>
               </div>
             </li>
           ))}
         </ul>
       )}
-      {payments && payments.length >= limit && (
-        <div className="mt-4 flex justify-center">
-          <Button variant="outline" size="sm" onClick={() => setLimit((l) => l + 50)}>
-            Load more
-          </Button>
-        </div>
-      )}
+
+      <Dialog
+        open={refundDialogOpen}
+        onOpenChange={(open) => {
+          setRefundDialogOpen(open)
+          if (!open) {
+            setRefundTarget(null)
+            setRefundAmount('')
+            setRefundRecipient('')
+            setRefundReason('')
+            setRefundFormError(null)
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Refund payment</DialogTitle>
+            <DialogDescription>
+              Enter the refund amount and recipient for this confirmed payment.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleRefund} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="refund-amount">Refund amount</Label>
+              <Input
+                id="refund-amount"
+                type="text"
+                inputMode="decimal"
+                placeholder={`Up to ${formatStroops(refundTarget?.amount_stroops ?? 0n)} ${refundTarget?.asset ?? ''}`}
+                value={refundAmount}
+                onChange={(event) => setRefundAmount(event.target.value)}
+                aria-invalid={Boolean(refundFormError)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="refund-recipient">Recipient address</Label>
+              <Input
+                id="refund-recipient"
+                type="text"
+                value={refundRecipient}
+                onChange={(event) => setRefundRecipient(event.target.value)}
+                aria-invalid={Boolean(refundFormError)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="refund-reason">Reason (optional)</Label>
+              <Textarea
+                id="refund-reason"
+                value={refundReason}
+                onChange={(event) => setRefundReason(event.target.value)}
+                rows={3}
+                placeholder="Customer requested a refund"
+              />
+            </div>
+            {refundFormError && <p className="text-sm text-destructive">{refundFormError}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRefundDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={refundingId !== null || !refundTarget}>
+                {refundingId === refundTarget?.id ? 'Refunding…' : 'Confirm refund'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       <section className="mt-8 space-y-3">
-        <h2 className="text-lg font-semibold">Refunds</h2>
+        <div>
+          <h2 className="text-lg font-semibold">Refunds</h2>
+          <p className="text-dim text-sm">
+            Search and date filters apply here. Payment status applies only to payments.
+          </p>
+        </div>
         {refunds.length === 0 ? (
           <p className="text-dim text-sm">No refunds yet.</p>
+        ) : filteredRefunds.length === 0 ? (
+          <p className="text-dim text-sm">No refunds match the current filters.</p>
         ) : (
           <ul className="border-hairline divide-y rounded-2xl border">
-            {refunds.map((refund) => (
+            {filteredRefunds.map((refund) => (
               <li
                 key={refund.id}
                 className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
@@ -244,7 +426,12 @@ export default function TransactionsPage() {
                 <span className="tabular-nums font-medium">
                   {formatStroops(refund.amount_stroops)} {refund.asset}
                 </span>
-                <Badge variant={refund.status === 'completed' ? 'default' : 'secondary'}>
+                <Badge
+                  variant={refund.status === 'completed' ? 'default' : 'secondary'}
+                  role="status"
+                  aria-live="polite"
+                  aria-label={`Refund status: ${refund.status}`}
+                >
                   {refund.status}
                 </Badge>
               </li>

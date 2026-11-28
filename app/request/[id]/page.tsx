@@ -1,24 +1,23 @@
 'use client'
 
-import { use, useCallback, useEffect, useState } from 'react'
+import { use, useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import QRCode from 'react-qr-code'
-import { Check, Clock, TriangleAlert } from 'lucide-react'
+import { Ban, Check, Clock, Copy, Share2, TriangleAlert } from 'lucide-react'
+import { AframpMark } from '@/components/brand/aframp-mark'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
 import { ErrorState } from '@/components/ui/error-state'
 import { api, ApiError, type PaymentRequest } from '@/lib/api'
 import { formatStroops } from '@/lib/money'
+import { useOptionalSession } from '@/components/session-provider'
 
-/**
- * The backend confirms a deposit within one Horizon poll cycle (60s default), so
- * polling faster than that mostly returns no-ops. Start fairly quick (the customer
- * may have just scanned) and back off to a ceiling while the request stays pending.
- */
-const POLL_INITIAL_MS = 5000
-const POLL_MAX_MS = 15000
-const POLL_BACKOFF = 1.5
+/** The backend confirms a deposit within one Horizon poll cycle (60s default). */
+const POLL_INTERVAL_MS = 3000
+
+/** Stop polling after this many consecutive failed loads. */
+const MAX_CONSECUTIVE_ERRORS = 3
 
 function secondsUntil(iso: string): number {
   return Math.max(0, Math.floor((new Date(iso).getTime() - Date.now()) / 1000))
@@ -29,11 +28,139 @@ function formatCountdown(seconds: number): string {
   return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+/** One labelled value the customer has to enter exactly, with a copy button. */
+function CopyField({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current)
+    },
+    []
+  )
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard blocked (e.g. insecure context): the value stays selectable.
+    }
+  }
+
+  return (
+    <>
+      <dt className="text-foreground text-xs font-medium">{label}</dt>
+      <dd className="mb-2 flex items-start justify-between gap-3">
+        <span className="font-heading min-w-0 break-all text-xs select-all">{value}</span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0 gap-1.5"
+          onClick={() => void copy()}
+          aria-label={copied ? `${label} copied` : `Copy ${label.toLowerCase()}`}
+        >
+          {copied ? (
+            <Check className="size-3.5" aria-hidden />
+          ) : (
+            <Copy className="size-3.5" aria-hidden />
+          )}
+          {copied ? 'Copied' : 'Copy'}
+        </Button>
+      </dd>
+    </>
+  )
+}
+
+/** Lets the merchant hand the page to a customer on another device. */
+function ShareLink({ amount }: { amount: string }) {
+  const [copied, setCopied] = useState(false)
+  const [canShare, setCanShare] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // navigator.share only exists in the browser, so check after mount.
+  useEffect(() => {
+    setCanShare(typeof navigator.share === 'function')
+    return () => {
+      if (timer.current) clearTimeout(timer.current)
+    }
+  }, [])
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href)
+      setCopied(true)
+      if (timer.current) clearTimeout(timer.current)
+      timer.current = setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard blocked (e.g. insecure context): the URL is still in the address bar.
+    }
+  }
+
+  const share = async () => {
+    try {
+      await navigator.share({ title: `Pay ${amount}`, url: window.location.href })
+    } catch {
+      // The customer dismissed the share sheet, or sharing isn't allowed here.
+    }
+  }
+
+  return (
+    <div className="flex gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        className="flex-1 gap-1.5"
+        onClick={() => void copy()}
+        aria-label={copied ? 'Payment link copied' : 'Copy payment link'}
+      >
+        {copied ? (
+          <Check className="size-4" aria-hidden />
+        ) : (
+          <Copy className="size-4" aria-hidden />
+        )}
+        {copied ? 'Copied' : 'Copy payment link'}
+      </Button>
+      {canShare && (
+        <Button
+          type="button"
+          variant="outline"
+          className="flex-1 gap-1.5"
+          onClick={() => void share()}
+        >
+          <Share2 className="size-4" aria-hidden />
+          Share
+        </Button>
+      )}
+    </div>
+  )
+}
+
 export default function PaymentRequestPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const [request, setRequest] = useState<PaymentRequest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [remaining, setRemaining] = useState(0)
+  const session = useOptionalSession()?.session ?? null
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+
+  const cancelRequest = async () => {
+    if (!session) return
+    setCancelling(true)
+    setCancelError(null)
+    try {
+      setRequest(await api.cancelPaymentRequest(session.token, id))
+    } catch (cause) {
+      setCancelError(cause instanceof Error ? cause.message : 'Could not cancel this request')
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -58,49 +185,36 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
   )
 
   // Poll while the customer hasn't paid yet; stop as soon as it settles.
-  // Backs off while pending, and pauses entirely while the tab is hidden.
   useEffect(() => {
     const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let delay = POLL_INITIAL_MS
-    let settled = false
-
-    const schedule = () => {
-      clearTimeout(timer)
-      timer = setTimeout(tick, delay)
-      delay = Math.min(POLL_MAX_MS, Math.round(delay * POLL_BACKOFF))
-    }
+    let timer: ReturnType<typeof setTimeout>
+    let consecutiveErrors = 0
 
     const tick = async () => {
-      if (document.hidden) return // resumed by the visibilitychange handler
       const next = await load(controller.signal)
       if (controller.signal.aborted) return
+
+      if (next) {
+        // Successful load — reset the backoff counter.
+        consecutiveErrors = 0
+      } else {
+        consecutiveErrors += 1
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          // Give up polling and let the user retry manually.
+          setError('backend-down')
+          return
+        }
+      }
+
       if (!next || next.status === 'pending') {
-        if (!document.hidden) schedule()
-      } else {
-        settled = true
+        timer = setTimeout(tick, POLL_INTERVAL_MS)
       }
     }
-
-    const onVisibilityChange = () => {
-      if (settled || controller.signal.aborted) return
-      if (document.hidden) {
-        clearTimeout(timer)
-      } else {
-        // Refresh right away on return, then start the backoff over.
-        clearTimeout(timer)
-        delay = POLL_INITIAL_MS
-        void tick()
-      }
-    }
-
-    document.addEventListener('visibilitychange', onVisibilityChange)
     void tick()
 
     return () => {
       controller.abort()
       clearTimeout(timer)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [load])
 
@@ -137,12 +251,14 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
 
   const amount = `${formatStroops(request.amount_stroops)} ${request.asset}`
   const paidAmount = request.amount_paid_stroops ?? 0n
-  const paidRatio = request.amount_stroops > 0n ? Number((paidAmount * 100n) / request.amount_stroops) : 0
+  const paidRatio =
+    request.amount_stroops > 0n ? Number((paidAmount * 100n) / request.amount_stroops) : 0
   const hasPartialPayment = request.allow_partial || paidAmount > 0n
+  const isOwner = !!session && session.merchantId === request.merchant_id
 
   if (request.status === 'paid') {
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-6 text-center">
+      <main className="font-brand mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-6 text-center">
         <div className="bg-primary/15 text-primary flex size-20 items-center justify-center rounded-full">
           <Check className="size-10" aria-hidden />
         </div>
@@ -157,9 +273,30 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
     )
   }
 
+  if (request.status === 'cancelled') {
+    return (
+      <main className="font-brand mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-6 text-center">
+        <div className="bg-muted text-muted-foreground flex size-20 items-center justify-center rounded-full">
+          <Ban className="size-10" aria-hidden />
+        </div>
+        <div className="space-y-1">
+          <h1 className="font-display text-2xl font-semibold tracking-tight">Request cancelled</h1>
+          <p className="text-muted-foreground text-sm">
+            This request for {amount} was cancelled. Please don&apos;t pay it.
+          </p>
+        </div>
+        {session && (
+          <Button asChild size="lg" className="w-full">
+            <Link href="/charge">Start a new charge</Link>
+          </Button>
+        )}
+      </main>
+    )
+  }
+
   if (request.status === 'expired') {
     return (
-      <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-6 text-center">
+      <main className="font-brand mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-6 px-6 text-center">
         <div className="bg-muted text-muted-foreground flex size-20 items-center justify-center rounded-full">
           <Clock className="size-10" aria-hidden />
         </div>
@@ -177,12 +314,21 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
   }
 
   return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-6 px-6 py-10">
+    <main className="font-brand mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-6 px-6 py-10">
+      <div className="flex items-center justify-center gap-2">
+        <AframpMark className="size-7" />
+        <span className="text-sm font-bold tracking-tight">Aframp</span>
+      </div>
       <header className="space-y-1 text-center">
         <p className="text-muted-foreground text-xs font-medium tracking-widest uppercase">
-          Ask your customer to scan
+          {request.sep7_uri ? 'Ask your customer to scan' : 'Ask your customer to pay'}
         </p>
-        <p className="font-display text-4xl font-semibold tracking-tight tabular-nums">{amount}</p>
+        {request.merchant_name && (
+          <p className="text-base font-medium">Paying {request.merchant_name}</p>
+        )}
+        <h1 className="font-display text-4xl font-semibold tracking-tight tabular-nums">
+          {amount}
+        </h1>
       </header>
 
       {error && (
@@ -220,7 +366,7 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
       {hasPartialPayment && (
         <div className="bg-muted/50 rounded-2xl p-4 text-sm">
           <div className="mb-2 flex items-center justify-between gap-3">
-            <span className="text-muted-foreground">Paid so far</span>
+            <span className="text-foreground">Paid so far</span>
             <span className="font-semibold tabular-nums">
               {formatStroops(paidAmount)} / {formatStroops(request.amount_stroops)} {request.asset}
             </span>
@@ -234,34 +380,43 @@ export default function PaymentRequestPage({ params }: { params: Promise<{ id: s
         </div>
       )}
 
-      <dl className="bg-muted/50 space-y-3 rounded-2xl p-4 text-sm">
-        <div className="space-y-1">
-          <dt className="text-muted-foreground text-xs">Pay to</dt>
-          <dd className="font-heading text-xs break-all">{request.address}</dd>
-        </div>
-        <div className="space-y-1">
-          <dt className="text-muted-foreground text-xs">Reference (memo)</dt>
-          <dd className="font-heading text-xs break-all">{request.memo}</dd>
-        </div>
+      <dl className="bg-muted/50 space-y-4 rounded-2xl p-4 text-sm">
+        <CopyField label="Amount" value={formatStroops(request.amount_stroops)} />
+        <CopyField label="Pay to" value={request.address} />
+        <CopyField label="Reference (memo)" value={request.memo} />
       </dl>
+      <p className="text-muted-foreground -mt-3 text-center text-xs">
+        The reference must be included exactly, or the payment can&apos;t be matched to this charge.
+      </p>
+
+      <ShareLink amount={amount} />
 
       <p
-        className="text-muted-foreground flex items-center justify-center gap-2 text-sm"
+        className="flex items-center justify-center gap-2 text-sm text-foreground"
         aria-live="polite"
       >
         <Clock className="size-4" aria-hidden />
-        Expires in <span className="tabular-nums">{formatCountdown(remaining)}</span>
+        {remaining > 0 ? `Expires in ${formatCountdown(remaining)}` : 'Expiring…'}
       </p>
 
-      <div className="space-y-2">
-        <Button asChild variant="outline" size="lg" className="w-full">
-          <Link href="/charge">Back to keypad</Link>
-        </Button>
-        {/* There's no cancel endpoint — a request can only expire on its own. */}
-        <p className="text-muted-foreground text-center text-xs">
-          This code stays payable until it expires.
-        </p>
-      </div>
+      {isOwner && (
+        <div className="space-y-2">
+          {cancelError && (
+            <Alert variant="destructive">
+              <AlertDescription>{cancelError}</AlertDescription>
+            </Alert>
+          )}
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full"
+            disabled={cancelling}
+            onClick={() => void cancelRequest()}
+          >
+            {cancelling ? 'Cancelling…' : 'Cancel request'}
+          </Button>
+        </div>
+      )}
     </main>
   )
 }

@@ -32,10 +32,11 @@ jobs:
   guard-main-frontend:
     name: 'Guard — No changes to main frontend'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -61,23 +62,6 @@ jobs:
           echo "=== Changed files ==="
           echo "$CHANGED"
           echo "====================="
-
-          # Exact paths an issue has explicitly assigned. The guard exists to
-          # stop sandbox work from breaking production, not to block a fix a
-          # maintainer has asked for by name. Every entry must name the issue
-          # that requires it — an unlisted path is still a violation.
-          #
-          #   components/onramp/zar-onramp.tsx, lib/navigation.ts and their
-          #   tests — issue #660 (test coverage for the Ozow onramp). The
-          #   redirect had to move behind lib/navigation because jsdom makes
-          #   window.location unobservable, so a test of the real file is the
-          #   only way to assert the Ozow redirect.
-          ALLOWED_EXACT=(
-            "^lib/navigation\.ts$"
-            "^lib/__tests__/navigation\.test\.ts$"
-            "^components/onramp/zar-onramp\.tsx$"
-            "^components/onramp/__tests__/zar-onramp\.test\.tsx$"
-          )
 
           # Protected path prefixes and exact files — main frontend.
           FORBIDDEN_PATTERNS=(
@@ -111,18 +95,6 @@ jobs:
 
           VIOLATIONS=""
           while IFS= read -r file; do
-            # An explicitly assigned path is exempt.
-            EXEMPT=false
-            for allowed in "${ALLOWED_EXACT[@]}"; do
-              if echo "$file" | grep -qE "$allowed"; then
-                EXEMPT=true
-                break
-              fi
-            done
-            if [ "$EXEMPT" = "true" ]; then
-              continue
-            fi
-
             for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
               if echo "$file" | grep -qE "$pattern"; then
                 VIOLATIONS="${VIOLATIONS}  - ${file}\n"

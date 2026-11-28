@@ -68,35 +68,6 @@ export function getProviderForCurrency(currency: FiatCurrency): PaymentProvider 
   }
 }
 
-function toMinorUnits(amount: number): number {
-  return Math.round(amount * 100)
-}
-
-function calculatePercentageInMinorUnits(amountMinor: number, rateBasisPoints: number): number {
-  return Math.floor((amountMinor * rateBasisPoints + 5000) / 10000)
-}
-
-/**
- * Return an amount validation message, or null when it is within provider limits.
- */
-export function getAmountValidationError(amount: number, provider: PaymentProvider): string | null {
-  const config = PROVIDER_CONFIGS[provider]
-
-  if (!Number.isFinite(amount)) {
-    return 'Amount must be a valid number.'
-  }
-
-  const amountMinor = toMinorUnits(amount)
-  if (amountMinor < toMinorUnits(config.minAmount)) {
-    return `Minimum amount is ${formatCurrency(config.minAmount, config.currency)}.`
-  }
-  if (amountMinor > toMinorUnits(config.maxAmount)) {
-    return `Maximum amount is ${formatCurrency(config.maxAmount, config.currency)}.`
-  }
-
-  return null
-}
-
 /**
  * Calculate fees for a given amount and provider
  */
@@ -110,25 +81,17 @@ export function calculateFees(
   totalCost: number
 } {
   const config = PROVIDER_CONFIGS[provider]
-  const validationError = getAmountValidationError(amount, provider)
-  if (validationError) {
-    throw new RangeError(validationError)
-  }
 
-  const amountMinor = toMinorUnits(amount)
-  const feeRateBasisPoints = Math.round(config.feePercentage * 10000)
-  const vatRateBasisPoints = Math.round(config.vat * 10000)
-  const processingFeeMinor =
-    calculatePercentageInMinorUnits(amountMinor, feeRateBasisPoints) + toMinorUnits(config.fixedFee)
-  const vatMinor = calculatePercentageInMinorUnits(processingFeeMinor, vatRateBasisPoints)
-  const totalFeesMinor = processingFeeMinor + vatMinor
-  const totalCostMinor = amountMinor + totalFeesMinor
+  const processingFee = amount * config.feePercentage + config.fixedFee
+  const vat = processingFee * config.vat
+  const totalFees = processingFee + vat
+  const totalCost = amount + totalFees
 
   return {
-    processingFee: processingFeeMinor / 100,
-    vat: vatMinor / 100,
-    totalFees: totalFeesMinor / 100,
-    totalCost: totalCostMinor / 100,
+    processingFee: Math.round(processingFee * 100) / 100,
+    vat: Math.round(vat * 100) / 100,
+    totalFees: Math.round(totalFees * 100) / 100,
+    totalCost: Math.round(totalCost * 100) / 100,
   }
 }
 
@@ -146,6 +109,36 @@ export function formatCurrency(amount: number, currency: FiatCurrency): string {
 
   const symbol = symbols[currency] || currency
   return `${symbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** Pattern that matches `ozow.com` and any subdomain (e.g. `pay.ozow.com`). */
+const OZOW_HOSTNAME_PATTERN = /^([\w-]+\.)*ozow\.com$/
+
+/**
+ * Validates that a payment URL returned by the Ozow backend is safe to
+ * redirect to.  Throws a descriptive `Error` when validation fails so the
+ * caller can surface it as a user-facing message.
+ *
+ * Rules enforced:
+ *  1. The URL must be parseable (no `javascript:` pseudo-URLs, etc.).
+ *  2. The scheme must be `https:`.
+ *  3. The hostname must be `ozow.com` or a subdomain of it.
+ */
+export function validateOzowPaymentUrl(url: string): void {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    throw new Error('Invalid payment URL received from server.')
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Payment URL must use HTTPS.')
+  }
+
+  if (!OZOW_HOSTNAME_PATTERN.test(parsed.hostname)) {
+    throw new Error('Payment URL does not point to a trusted Ozow domain.')
+  }
 }
 
 /**

@@ -1,11 +1,20 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useRouter } from 'next/navigation'
-import { api, ApiError } from '@/lib/api'
 import ChargePage from '../page'
+import { calculateFiatEquivalent } from '@/lib/charge'
+import { api, ApiError } from '@/lib/api'
+
+const mockPush = jest.fn()
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mockPush }),
+}))
+
+jest.mock('@/components/session-provider', () => ({
+  useAuthenticatedSession: () => ({ token: 'test-token', userId: 'u-1', merchantId: 'm-1' }),
+}))
 
 jest.mock('@/lib/api', () => {
-  class ApiError extends Error {
+  class MockApiError extends Error {
     constructor(
       message: string,
       readonly status: number
@@ -14,132 +23,244 @@ jest.mock('@/lib/api', () => {
       this.name = 'ApiError'
     }
   }
+
   return {
-    api: { createPaymentRequest: jest.fn() },
-    ApiError,
+    api: {
+      createPaymentRequest: jest.fn(),
+    },
+    ApiError: MockApiError,
   }
 })
 
-jest.mock('@/components/session-provider', () => ({
-  useAuthenticatedSession: () => ({ token: 'test-token' }),
-}))
-
-jest.mock('next/navigation', () => ({
-  useRouter: jest.fn(),
-}))
-
 const mockCreatePaymentRequest = api.createPaymentRequest as jest.Mock
 
+describe('calculateFiatEquivalent', () => {
+  it('returns ≈ ₦0 for empty, zero, or invalid amounts', () => {
+    expect(calculateFiatEquivalent('', 250)).toBe('≈ ₦0')
+    expect(calculateFiatEquivalent('0', 250)).toBe('≈ ₦0')
+    expect(calculateFiatEquivalent('abc', 250)).toBe('≈ ₦0')
+    expect(calculateFiatEquivalent('-10', 250)).toBe('≈ ₦0')
+  })
+
+  it('formats whole number conversions correctly with thousands separators', () => {
+    expect(calculateFiatEquivalent('50', 249)).toBe('≈ ₦12,450')
+    expect(calculateFiatEquivalent('1000', 300)).toBe('≈ ₦300,000')
+  })
+
+  it('formats fractional amounts correctly', () => {
+    expect(calculateFiatEquivalent('1.5', 200)).toBe('≈ ₦300')
+    expect(calculateFiatEquivalent('0.25', 100)).toBe('≈ ₦25')
+  })
+})
+
 describe('ChargePage', () => {
-  const push = jest.fn()
+  const originalFetch = global.fetch
 
   beforeEach(() => {
     jest.clearAllMocks()
-    ;(useRouter as jest.Mock).mockReturnValue({ push })
-    mockCreatePaymentRequest.mockResolvedValue({ id: 'req-1' })
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stellar: { ngn: 250 } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
   })
 
-  async function enterAmount(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(screen.getByRole('button', { name: '2' }))
-    await user.click(screen.getByRole('button', { name: '5' }))
-  }
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
 
-  it('offers XLM and cNGN and defaults to XLM', () => {
+  it('fetches exchange rate on mount and displays fiat equivalent as user types', async () => {
     render(<ChargePage />)
-    const assetGroup = screen.getByRole('group', { name: 'Asset' })
 
-    expect(assetGroup).toHaveTextContent('XLM')
-    expect(assetGroup).toHaveTextContent('cNGN')
-    expect(screen.getByRole('button', { name: 'XLM' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'cNGN' })).toHaveAttribute('aria-pressed', 'false')
+    expect(await screen.findByText(/1 XLM ≈ ₦250/)).toBeInTheDocument()
+    expect(screen.getByTestId('fiat-equivalent')).toHaveTextContent('≈ ₦0')
+
+    fireEvent.click(screen.getByRole('button', { name: '5' }))
+    fireEvent.click(screen.getByRole('button', { name: '0' }))
+
+    expect(screen.getByTestId('fiat-equivalent')).toHaveTextContent('≈ ₦12,500')
   })
 
-  it('creates an XLM charge by default', async () => {
+  it('handles keypad interactions: decimals, fraction limits, backspace', async () => {
+    render(<ChargePage />)
+    await screen.findByText(/1 XLM ≈ ₦250/)
+
+    const amountDisplay = screen.getByTestId('charge-amount')
+
+    // Press .
+    fireEvent.click(screen.getByRole('button', { name: '.' }))
+    expect(amountDisplay).toHaveTextContent('0.')
+
+    // Press . again (should ignore second dot)
+    fireEvent.click(screen.getByRole('button', { name: '.' }))
+    expect(amountDisplay).toHaveTextContent('0.')
+
+    // Press 5
+    fireEvent.click(screen.getByRole('button', { name: '5' }))
+    expect(amountDisplay).toHaveTextContent('0.5')
+
+    // Press backspace
+    fireEvent.click(screen.getByRole('button', { name: 'Delete last digit' }))
+    expect(amountDisplay).toHaveTextContent('0.')
+
+    // Press backspace again
+    fireEvent.click(screen.getByRole('button', { name: 'Delete last digit' }))
+    expect(amountDisplay).toHaveTextContent('0')
+
+    // Leading 0 then digit replaces 0
+    fireEvent.click(screen.getByRole('button', { name: '0' }))
+    fireEvent.click(screen.getByRole('button', { name: '7' }))
+    expect(amountDisplay).toHaveTextContent('7')
+  })
+
+  it('limits decimal fraction digits to DECIMALS (7)', async () => {
+    render(<ChargePage />)
+    await screen.findByText(/1 XLM ≈ ₦250/)
+
+    const amountDisplay = screen.getByTestId('charge-amount')
+
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    fireEvent.click(screen.getByRole('button', { name: '.' }))
+    for (let i = 0; i < 7; i++) {
+      fireEvent.click(screen.getByRole('button', { name: '1' }))
+    }
+    expect(amountDisplay).toHaveTextContent('1.1111111')
+
+    // 8th fraction digit should be ignored
+    fireEvent.click(screen.getByRole('button', { name: '2' }))
+    expect(amountDisplay).toHaveTextContent('1.1111111')
+  })
+
+  it('supports manual rate refresh button', async () => {
+    render(<ChargePage />)
+    await screen.findByText(/1 XLM ≈ ₦250/)
+
+    global.fetch = jest.fn().mockResolvedValue(
+      new Response(JSON.stringify({ stellar: { ngn: 300 } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+
+    const refreshButton = screen.getByRole('button', { name: 'Refresh exchange rate' })
+    fireEvent.click(refreshButton)
+
+    expect(await screen.findByText(/1 XLM ≈ ₦300/)).toBeInTheDocument()
+  })
+
+  it('falls back to cached rate and shows "Rate may be stale" warning on refresh error', async () => {
+    render(<ChargePage />)
+    await screen.findByText(/1 XLM ≈ ₦250/)
+
+    global.fetch = jest.fn().mockRejectedValue(new Error('Network offline'))
+
+    const refreshButton = screen.getByRole('button', { name: 'Refresh exchange rate' })
+    fireEvent.click(refreshButton)
+
+    const warning = await screen.findByTestId('stale-warning')
+    expect(warning).toHaveTextContent(/rate may be stale/i)
+    expect(screen.getByText(/1 XLM ≈ ₦250/)).toBeInTheDocument()
+  })
+
+  it('displays rate unavailable when initial rate fetch fails', async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error('Failed initial fetch'))
+
+    render(<ChargePage />)
+
+    expect(await screen.findByText('Rate unavailable')).toBeInTheDocument()
+    expect(await screen.findByText('Unable to load current exchange rate')).toBeInTheDocument()
+  })
+
+  it('submits a payment request successfully with allowPartial option', async () => {
     const user = userEvent.setup()
+    mockCreatePaymentRequest.mockResolvedValue({ id: 'req-456' })
+
     render(<ChargePage />)
+    await screen.findByText(/1 XLM ≈ ₦250/)
 
-    await enterAmount(user)
-    await user.click(screen.getByRole('button', { name: 'Show payment code' }))
+    fireEvent.click(screen.getByRole('button', { name: '5' }))
+    fireEvent.click(screen.getByRole('button', { name: '0' }))
 
-    await waitFor(() =>
+    const allowPartialCheckbox = screen.getByLabelText('Allow partial payment')
+    await user.click(allowPartialCheckbox)
+
+    const submitButton = screen.getByRole('button', { name: 'Show payment code' })
+    await user.click(submitButton)
+
+    await waitFor(() => {
       expect(mockCreatePaymentRequest).toHaveBeenCalledWith(
         'test-token',
-        250_000_000n,
+        500_000_000n,
         'XLM',
-        undefined,
-        false
-      )
-    )
-    expect(push).toHaveBeenCalledWith('/request/req-1')
-  })
-
-  it('creates a cNGN charge when the merchant selects cNGN', async () => {
-    const user = userEvent.setup()
-    render(<ChargePage />)
-
-    await user.click(screen.getByRole('button', { name: 'cNGN' }))
-    await enterAmount(user)
-
-    expect(screen.getByText('25').parentElement).toHaveTextContent('cNGN')
-    expect(screen.getByRole('button', { name: 'cNGN' })).toHaveAttribute('aria-pressed', 'true')
-
-    await user.click(screen.getByRole('button', { name: 'Show payment code' }))
-
-    await waitFor(() =>
-      expect(mockCreatePaymentRequest).toHaveBeenCalledWith(
-        'test-token',
-        250_000_000n,
-        'cNGN',
-        undefined,
-        false
-      )
-    )
-  })
-
-  it('forwards allow partial payment with the chosen asset', async () => {
-    const user = userEvent.setup()
-    render(<ChargePage />)
-
-    await user.click(screen.getByRole('button', { name: 'cNGN' }))
-    await user.click(screen.getByRole('checkbox', { name: 'Allow partial payment' }))
-    await enterAmount(user)
-    await user.click(screen.getByRole('button', { name: 'Show payment code' }))
-
-    await waitFor(() =>
-      expect(mockCreatePaymentRequest).toHaveBeenCalledWith(
-        'test-token',
-        250_000_000n,
-        'cNGN',
         undefined,
         true
       )
+      expect(mockPush).toHaveBeenCalledWith('/request/req-456')
+    })
+  })
+
+  it('handles wallet configuration error when creating a charge', async () => {
+    const user = userEvent.setup()
+    mockCreatePaymentRequest.mockRejectedValue(
+      new ApiError('You need to create a wallet before accepting payments', 400)
     )
+
+    render(<ChargePage />)
+    await screen.findByText(/1 XLM ≈ ₦250/)
+
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    const submitButton = screen.getByRole('button', { name: 'Show payment code' })
+    await user.click(submitButton)
+
+    expect(
+      await screen.findByText('Set up your payment address first, then come back here.')
+    ).toBeInTheDocument()
   })
 
-  it('shows a backend error without navigating away', async () => {
+  it('handles generic error when creating a charge', async () => {
     const user = userEvent.setup()
-    mockCreatePaymentRequest.mockRejectedValue(new ApiError('Issuer not configured', 400))
+    mockCreatePaymentRequest.mockRejectedValue(new Error('Payment gateway error'))
+
     render(<ChargePage />)
+    await screen.findByText(/1 XLM ≈ ₦250/)
 
-    await user.click(screen.getByRole('button', { name: 'cNGN' }))
-    await enterAmount(user)
-    await user.click(screen.getByRole('button', { name: 'Show payment code' }))
+    fireEvent.click(screen.getByRole('button', { name: '1' }))
+    const submitButton = screen.getByRole('button', { name: 'Show payment code' })
+    await user.click(submitButton)
 
-    expect(await screen.findByText('Issuer not configured')).toBeInTheDocument()
-    expect(push).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Show payment code' })).toBeEnabled()
+    expect(await screen.findByText('Payment gateway error')).toBeInTheDocument()
   })
 
-  it('clears an error when the merchant switches asset', async () => {
-    const user = userEvent.setup()
-    mockCreatePaymentRequest.mockRejectedValueOnce(new ApiError('Try again', 500))
-    render(<ChargePage />)
+  it('decrements countdown timer and triggers refresh when countdown hits zero', async () => {
+    // A plain response: undici's Response.json() doesn't settle while fake
+    // timers are installed, which would leave the refresh hanging.
+    global.fetch = jest.fn(() =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ stellar: { ngn: 250 } }) })
+    ) as unknown as typeof fetch
+    jest.useFakeTimers()
+    try {
+      render(<ChargePage />)
+      // Let the initial rate load settle before the clock starts moving.
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(screen.getByText(/1 XLM ≈ ₦250/)).toBeInTheDocument()
+      expect(screen.getByText(/Refresh in 30s/)).toBeInTheDocument()
 
-    await enterAmount(user)
-    await user.click(screen.getByRole('button', { name: 'Show payment code' }))
-    expect(await screen.findByText('Try again')).toBeInTheDocument()
+      act(() => {
+        jest.advanceTimersByTime(2000)
+      })
+      expect(screen.getByText(/Refresh in 28s/)).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'cNGN' }))
-    expect(screen.queryByText('Try again')).not.toBeInTheDocument()
+      await act(async () => {
+        jest.advanceTimersByTime(28000)
+        await Promise.resolve()
+      })
+
+      expect(global.fetch).toHaveBeenCalledTimes(2)
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })

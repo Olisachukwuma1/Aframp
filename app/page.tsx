@@ -1,35 +1,51 @@
-import type { Metadata } from 'next'
-import { Faq } from '@/components/landing-light/faq'
+import dynamic from 'next/dynamic'
+
+import { Features } from '@/components/landing-light/features'
 import { FinalCta } from '@/components/landing-light/final-cta'
 import { Hero } from '@/components/landing-light/hero'
 import { HowItWorks } from '@/components/landing-light/how-it-works'
-import { SiteFooter } from '@/components/landing-light/site-footer'
-import { UseCases } from '@/components/landing-light/use-cases'
+import { Pricing } from '@/components/landing-light/pricing'
+import {
+  FaqSkeleton,
+  SiteFooterSkeleton,
+  UseCasesSkeleton,
+} from '@/components/landing-light/section-skeletons'
+import { Trust } from '@/components/landing-light/trust'
 import { WhyUs } from '@/components/landing-light/why-us'
 
-const title = "Aframp — Africa's gateway to global decentralized finance"
-const description =
-  'Fast, secure, and effortless for everyday spending. Send money to anyone in Africa instantly.'
+// Below-the-fold sections: split out of the initial bundle and streamed in
+// once ready, so they don't compete with the hero for the first paint. (#477)
+const UseCases = dynamic(
+  () => import('@/components/landing-light/use-cases').then((m) => m.UseCases),
+  { loading: () => <UseCasesSkeleton /> }
+)
+const Faq = dynamic(() => import('@/components/landing-light/faq').then((m) => m.Faq), {
+  loading: () => <FaqSkeleton />,
+})
+const SiteFooter = dynamic(
+  () => import('@/components/landing-light/site-footer').then((m) => m.SiteFooter),
+  { loading: () => <SiteFooterSkeleton /> }
+)
 
-// Share images come from app/opengraph-image.tsx and app/twitter-image.tsx.
-export const metadata: Metadata = {
-  title,
-  description,
-  alternates: { canonical: '/' },
-  openGraph: { type: 'website', url: '/', siteName: 'Aframp', title, description },
-  twitter: { card: 'summary_large_image', title, description },
+export const metadata = {
+  title: "Aframp — Africa's gateway to global decentralized finance",
+  description:
+    'Fast, secure, and effortless for everyday spending. Send money to anyone in Africa instantly.',
 }
 
 // Single, theme-aware landing page (light and dark both live here via
-// `dark:` classes), built from `components/landing-light/`. The old dark-only
-// variant under `components/landing/` has been deleted.
+// `dark:` classes) — the previous dark-only variant under
+// `components/landing/` was unused and has been removed.
 export default function Home() {
   return (
     <div className="font-brand bg-white dark:bg-surface">
-      <Hero />
       <main>
+        <Hero />
         <UseCases />
         <HowItWorks />
+        <Features />
+        <Pricing />
+        <Trust />
         <Faq />
         <WhyUs />
         <FinalCta />

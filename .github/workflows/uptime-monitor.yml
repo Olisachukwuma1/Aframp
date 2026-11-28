@@ -4,6 +4,10 @@ on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      url:
+        description: 'Origin to check instead of PRODUCTION_URL (no trailing slash)'
+        required: false
 
 permissions:
   contents: read
@@ -13,24 +17,31 @@ jobs:
   monitor:
     name: Check Production Uptime
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
+    env:
+      # The public Vercel production alias; app.aframp.com doesn't resolve yet.
+      # Override with the PRODUCTION_URL repository variable (Settings ->
+      # Secrets and variables -> Actions -> Variables) once the custom domain
+      # is live. No trailing slash.
+      PRODUCTION_URL: ${{ inputs.url || vars.PRODUCTION_URL || 'https://aframp.vercel.app' }}
     steps:
       - name: Restore prior failure count
-        uses: actions/cache@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .uptime-monitor-state.json
-          key: uptime-monitor-state-${{ github.repository }}
+          key: uptime-monitor-state-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: uptime-monitor-state-
 
       - name: Check homepage
         id: homepage
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://app.aframp.com/ || echo "000")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${PRODUCTION_URL%/}/" || true)
           if [ "$STATUS" != "200" ]; then
             echo "status=down" >> "$GITHUB_OUTPUT"
-            echo "⚠️ Homepage returned HTTP $STATUS"
+            echo "::warning::Homepage ($PRODUCTION_URL) returned HTTP $STATUS"
           else
             echo "status=up" >> "$GITHUB_OUTPUT"
             echo "✅ Homepage up"
@@ -39,10 +50,10 @@ jobs:
       - name: Check login page
         id: login
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://app.aframp.com/login || echo "000")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${PRODUCTION_URL%/}/login" || true)
           if [ "$STATUS" != "200" ]; then
             echo "status=down" >> "$GITHUB_OUTPUT"
-            echo "⚠️ Login page returned HTTP $STATUS"
+            echo "::warning::Login page ($PRODUCTION_URL) returned HTTP $STATUS"
           else
             echo "status=up" >> "$GITHUB_OUTPUT"
             echo "✅ Login page up"
@@ -51,10 +62,10 @@ jobs:
       - name: Check wallet dashboard
         id: wallet
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://app.aframp.com/wallet || echo "000")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "${PRODUCTION_URL%/}/wallet" || true)
           if [ "$STATUS" != "200" ]; then
             echo "status=down" >> "$GITHUB_OUTPUT"
-            echo "⚠️ Wallet page returned HTTP $STATUS"
+            echo "::warning::Wallet page ($PRODUCTION_URL) returned HTTP $STATUS"
           else
             echo "status=up" >> "$GITHUB_OUTPUT"
             echo "✅ Wallet page up"
@@ -88,9 +99,20 @@ jobs:
           echo "count=$FAILURES" >> "$GITHUB_OUTPUT"
           echo "down=$DOWN" >> "$GITHUB_OUTPUT"
 
+      # Cache entries are immutable, so save under a unique key per run; the
+      # restore step above picks up the most recent one via its prefix.
+      # A manual check of another origin (the `url` input) doesn't touch the
+      # production failure count or its outage issue.
+      - name: Save failure count
+        if: ${{ !inputs.url }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .uptime-monitor-state.json
+          key: uptime-monitor-state-${{ github.run_id }}-${{ github.run_attempt }}
+
       - name: Create outage issue after 3 failures
-        if: ${{ steps.failures.outputs.count == '3' }}
-        uses: actions/github-script@v7
+        if: ${{ !inputs.url && steps.failures.outputs.count >= 3 }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const title = '🚨 AFRAMP production uptime alert';
@@ -120,8 +142,8 @@ jobs:
             }
 
       - name: Close outage issue when restored
-        if: ${{ steps.failures.outputs.count == '0' }}
-        uses: actions/github-script@v7
+        if: ${{ !inputs.url && steps.failures.outputs.count == '0' }}
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const title = '🚨 AFRAMP production uptime alert';
@@ -140,7 +162,7 @@ jobs:
 
       - name: Alert on downtime
         if: ${{ steps.failures.outputs.down == 'true' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const statuses = {
@@ -155,3 +177,4 @@ jobs:
             console.log(
               `🚨 ALERT: AFRAMP production endpoints are DOWN\n\nTime: ${new Date().toISOString()}\n\nAffected:\n${down}\n\nCheck: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}`
             );
+            core.setFailed(`AFRAMP production endpoints are DOWN:\n${down}`);

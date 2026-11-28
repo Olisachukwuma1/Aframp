@@ -5,11 +5,6 @@
  * call. Amounts of different assets can't be meaningfully summed together
  * (a stroop of XLM and a stroop of cNGN aren't the same value), so this
  * buckets per day *and* per asset rather than producing one blended total.
- *
- * PRECISION NOTE: Stroops are converted to Number for display. Number() silently
- * loses precision for values > Number.MAX_SAFE_INTEGER (2^53 - 1, ~9e15).
- * For XLM (12 decimals), this is ~900 million XLM. Merchants with balances above
- * this threshold will see rounded chart values. Set a warning/cap if needed.
  */
 
 import type { Payment } from './api'
@@ -27,18 +22,39 @@ export interface DailyRevenueEntry {
 const DAY_MS = 24 * 60 * 60 * 1000
 
 /**
- * Returns the ISO calendar date (YYYY-MM-DD) for the given date in UTC.
- * Uses UTC to match backend and activity-highlights day boundaries.
+ * Largest stroop value that converts to a `number` without precision loss.
+ *
+ * `Number()` can only represent integers exactly up to 2^53 - 1
+ * (`Number.MAX_SAFE_INTEGER`). Above that, converting a `bigint` silently
+ * rounds, so the chart would show wrong totals. At 7 decimal places this
+ * boundary is ~900,719,925 whole units per asset per day.
  */
+export const MAX_SAFE_STROOPS = BigInt(Number.MAX_SAFE_INTEGER)
+
 function dateKey(date: Date): string {
-  const year = date.getUTCFullYear()
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(date.getUTCDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  return date.toISOString().slice(0, 10)
 }
 
 function weekdayLabel(date: Date): string {
-  return date.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })
+  return date.toLocaleDateString('en-US', { weekday: 'short' })
+}
+
+/**
+ * Converts aggregated stroops to whole units for display, guarding against
+ * silent precision loss. Values above `MAX_SAFE_STROOPS` are clamped to the
+ * largest exactly-representable value and a warning is emitted, so the chart
+ * degrades visibly rather than showing a plausible-but-wrong total.
+ */
+function stroopsToUnits(stroops: bigint, asset: string): number {
+  if (stroops > MAX_SAFE_STROOPS) {
+    console.warn(
+      `[revenue] ${asset} daily total (${stroops} stroops) exceeds ` +
+        `Number.MAX_SAFE_INTEGER (${MAX_SAFE_STROOPS}); clamping to avoid ` +
+        `precision loss in the revenue chart.`
+    )
+    return Number(MAX_SAFE_STROOPS) / Number(STROOPS_PER_UNIT)
+  }
+  return Number(stroops) / Number(STROOPS_PER_UNIT)
 }
 
 /**
@@ -47,9 +63,9 @@ function weekdayLabel(date: Date): string {
  * injectable so tests don't depend on the real clock.
  *
  * Amounts are converted from stroops to whole units only here, for display —
- * this is a chart aggregate, not a ledger balance. Note: values exceeding
- * Number.MAX_SAFE_INTEGER (~9e15 stroops, ~900M XLM for 12-decimal assets)
- * will round silently. A warning is logged if this occurs.
+ * this is a chart aggregate, not a ledger balance. Conversion is guarded by
+ * `stroopsToUnits` so totals above `Number.MAX_SAFE_INTEGER` stroops are
+ * clamped and warned about instead of silently rounded.
  */
 export function buildDailyRevenue(
   payments: Payment[],
@@ -80,13 +96,7 @@ export function buildDailyRevenue(
     const dayTotals = totalsByDay.get(day.date)
     if (!dayTotals) continue
     for (const [asset, stroops] of dayTotals) {
-      if (stroops > Number.MAX_SAFE_INTEGER) {
-        console.warn(
-          `[revenue] Precision loss: ${asset} balance ${stroops} exceeds MAX_SAFE_INTEGER. ` +
-          `Converted value may be rounded. Consider using BigInt display or capping display.`
-        )
-      }
-      day.totals[asset] = Number(stroops) / Number(STROOPS_PER_UNIT)
+      day.totals[asset] = stroopsToUnits(stroops, asset)
     }
   }
 

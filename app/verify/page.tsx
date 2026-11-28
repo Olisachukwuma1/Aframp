@@ -1,6 +1,7 @@
 'use client'
 
 import { Suspense, useEffect, useRef, useState } from 'react'
+import { safeSessionStorage } from '@/lib/safe-storage'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { WifiOff } from 'lucide-react'
@@ -11,12 +12,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
 import { useSession } from '@/components/session-provider'
 import { ApiError, isOffline } from '@/lib/api'
-import {
-  getLoginPath,
-  getPaymentIntent,
-  getPostAuthPath,
-  getSignupPath,
-} from '@/lib/payment-intent'
+import { CHALLENGE_SESSION_KEY } from '@/lib/otp-challenge'
+import { AuthHeader } from '@/components/brand/auth-header'
 
 const CODE_LENGTH = 6
 
@@ -46,9 +43,10 @@ function VerifyOtpForm() {
   const { session, ready, completeOtp } = useSession()
   const router = useRouter()
   const searchParams = useSearchParams()
-  const challengeId = searchParams.get('challenge_id')
   const flow: Flow = searchParams.get('flow') === 'signup' ? 'signup' : 'login'
-  const intent = getPaymentIntent(searchParams.get('intent'))
+
+  // #638: read challenge_id from sessionStorage instead of the URL
+  const [challengeId, setChallengeId] = useState<string | null>(null)
 
   const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -58,15 +56,19 @@ function VerifyOtpForm() {
   const codeInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (ready && session) router.replace(getPostAuthPath(intent))
-  }, [ready, session, router, intent])
+    if (ready && session) router.replace(flow === 'login' ? '/home' : '/charge')
+  }, [ready, session, router, flow])
 
-  // There's no OTP flow without a challenge to verify — someone landed here
-  // directly (bookmark, back button after completing it) rather than via
-  // signup/login handing one off.
+  // Read challenge_id from sessionStorage on mount. If missing, the user
+  // arrived here directly (bookmark, back button) — send them to login.
   useEffect(() => {
-    if (!challengeId) router.replace(getLoginPath(intent))
-  }, [challengeId, intent, router])
+    const stored = safeSessionStorage.getItem(CHALLENGE_SESSION_KEY)
+    if (!stored) {
+      router.replace('/login')
+    } else {
+      setChallengeId(stored)
+    }
+  }, [router])
 
   useEffect(() => {
     codeInputRef.current?.focus()
@@ -86,9 +88,13 @@ function VerifyOtpForm() {
     setSubmitting(true)
     try {
       await completeOtp(challengeId, code.trim())
-      router.replace(getPostAuthPath(intent))
+      // #638: clear the challenge_id from sessionStorage on success
+      safeSessionStorage.removeItem(CHALLENGE_SESSION_KEY)
+      router.replace(flow === 'login' ? '/home' : '/charge')
     } catch (cause) {
+      // #638: clear the challenge_id from sessionStorage on terminal failure
       if (cause instanceof ApiError && cause.code && TERMINAL_CODES.has(cause.code)) {
+        safeSessionStorage.removeItem(CHALLENGE_SESSION_KEY)
         setTerminal(true)
         setError(
           cause.code === 'OTP_LOCKED'
@@ -108,18 +114,18 @@ function VerifyOtpForm() {
 
   if (!challengeId) return null
 
-  const restartHref = flow === 'signup' ? getSignupPath(intent) : getLoginPath(intent)
+  const restartHref = flow === 'signup' ? '/signup' : '/login'
 
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-8 px-6 py-12">
-      <header className="space-y-2">
-        <h1 className="font-display text-3xl font-semibold tracking-tight">Aframp Pay</h1>
-        <p className="text-muted-foreground text-sm">
-          {flow === 'signup'
-            ? "Enter the code we texted you to finish creating your account."
-            : 'Enter the code we texted you to finish signing in.'}
-        </p>
-      </header>
+    <main className="font-brand mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center gap-8 px-6 py-12">
+      <AuthHeader
+        title="Check your phone"
+        subtitle={
+          flow === 'signup'
+            ? 'Enter the code we texted you to finish creating your account.'
+            : 'Enter the code we texted you to finish signing in.'
+        }
+      />
 
       <form noValidate onSubmit={handleVerify} className="flex flex-col gap-4">
         {error && (

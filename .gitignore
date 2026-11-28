@@ -10,6 +10,12 @@ requirements.md
 .vercel
 .env*.local
 coverage/
+test-results/
+playwright-report/
 .claude 
 tsconfig.tsbuildinfo
 designs
+
+
+# Written by `next dev` (Next 16) on every start
+AGENTS.md

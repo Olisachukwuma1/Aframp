@@ -1,8 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { AlertTriangle, Bell, Mail, Save, Trash2, User } from 'lucide-react'
+import { AlertTriangle, Bell, Mail, Phone, Save, Trash2, User } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,6 +11,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Separator } from '@/components/ui/separator'
 import { LoadingSpinner } from '@/components/ui/loading-spinner'
 import { PushNotificationToggle } from '@/components/push-notification-toggle'
+import { ActiveSessions } from '@/components/active-sessions'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,8 +23,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { api, ApiError, type Me } from '@/lib/api'
+import { api, type Me } from '@/lib/api'
 import { useAuthenticatedSession, useSession } from '@/components/session-provider'
+
+/** RFC-5322-inspired regex that catches obviously malformed addresses client-side. */
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const PHONE_REGEX = /^\+?[1-9]\d{8,14}$/
+
+function normalizePhone(value: string): string {
+  return value.trim().replace(/[\s()-]/g, '')
+}
 
 function getInitials(name: string | null): string {
   if (!name) return '?'
@@ -38,57 +47,40 @@ function getInitials(name: string | null): string {
 
 export default function ProfilePage() {
   const { token } = useAuthenticatedSession()
-  const { signOut, refreshMe, me: cachedMe } = useSession()
+  const { signOut, refreshMe, me: cachedMe, meLoading, meError } = useSession()
   const router = useRouter()
 
   const [me, setMe] = useState<Me | null>(null)
-  const [loading, setLoading] = useState(true)
   const [savingProfile, setSavingProfile] = useState(false)
   const [savingEmail, setSavingEmail] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteConfirmEmail, setDeleteConfirmEmail] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
   const [name, setName] = useState('')
   const [merchantName, setMerchantName] = useState('')
   const [newEmail, setNewEmail] = useState('')
+  const [emailFormatError, setEmailFormatError] = useState<string | null>(null)
   const [emailSent, setEmailSent] = useState(false)
 
-  const load = useCallback(
-    async (signal?: AbortSignal) => {
-      setLoading(true)
-      setError(null)
-      try {
-        const data = await api.getMe(token, signal)
-        setMe(data)
-        setName(data.name ?? '')
-        setMerchantName(data.merchant_name ?? '')
-        setNewEmail(data.email ?? '')
-      } catch (cause) {
-        if (cause instanceof DOMException && cause.name === 'AbortError') return
-        if (cause instanceof ApiError && cause.status === 0) throw cause
-        setError(cause instanceof Error ? cause.message : 'Could not load profile')
-      } finally {
-        setLoading(false)
-      }
-    },
-    [token]
-  )
+  const [newPhone, setNewPhone] = useState('')
+  const [phoneCode, setPhoneCode] = useState('')
+  const [phoneChallenge, setPhoneChallenge] = useState<string | null>(null)
+  const [verifyingNewPhone, setVerifyingNewPhone] = useState(false)
+  const [savingPhone, setSavingPhone] = useState(false)
+  const [phoneChanged, setPhoneChanged] = useState(false)
+  const [phoneError, setPhoneError] = useState<string | null>(null)
+  const displayPhone = me?.phone_number || 'Not set'
 
-  useEffect(() => {
-    const controller = new AbortController()
-    void load(controller.signal)
-    return () => controller.abort()
-  }, [load])
-
-  // If session provider already has cached me data, use it to avoid flash
+  // The profile is loaded once by the session provider; seed the editable form from it.
   useEffect(() => {
     if (cachedMe && !me) {
       setMe(cachedMe)
       setName(cachedMe.name ?? '')
       setMerchantName(cachedMe.merchant_name ?? '')
       setNewEmail(cachedMe.email ?? '')
-      setLoading(false)
     }
   }, [cachedMe, me])
 
@@ -107,8 +99,12 @@ export default function ProfilePage() {
         merchant_name: merchantName.trim() || undefined,
       })
       setMe((prev) => (prev ? { ...prev, ...updated } : prev))
-      await refreshMe()
-      showSuccess('Profile updated successfully.')
+      const result = await refreshMe()
+      if (result.success) {
+        showSuccess('Profile updated successfully.')
+      }
+      // Network errors are handled silently here - the UI already shows the
+      // updated local state, and the next render will retry.
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not update profile')
     } finally {
@@ -119,10 +115,18 @@ export default function ProfilePage() {
   async function sendEmailVerification(event: React.FormEvent) {
     event.preventDefault()
     const email = newEmail.trim()
+
     if (!email || email === me?.email) {
       setError('Enter a new email address to change it.')
       return
     }
+
+    if (!EMAIL_REGEX.test(email)) {
+      setEmailFormatError('Please enter a valid email address.')
+      return
+    }
+
+    setEmailFormatError(null)
     setSavingEmail(true)
     setError(null)
     try {
@@ -134,6 +138,77 @@ export default function ProfilePage() {
     } finally {
       setSavingEmail(false)
     }
+  }
+
+  async function startPhoneChange(event: React.FormEvent) {
+    event.preventDefault()
+    const nextPhone = normalizePhone(newPhone)
+
+    if (!nextPhone || nextPhone === normalizePhone(displayPhone)) {
+      setPhoneError('Enter a different phone number to change it.')
+      return
+    }
+    if (!PHONE_REGEX.test(nextPhone)) {
+      setPhoneError('Enter a valid phone number (9–15 digits, optional + country code).')
+      return
+    }
+
+    setPhoneError(null)
+    setSavingPhone(true)
+    try {
+      const result = await api.changePhone(token, { new_phone: nextPhone })
+      if ('challenge_id' in result) {
+        setPhoneChallenge(result.challenge_id)
+        setVerifyingNewPhone(false)
+        setPhoneCode('')
+      } else {
+        setPhoneError('The server did not start a verification. Please try again.')
+      }
+    } catch (cause) {
+      setPhoneError(cause instanceof Error ? cause.message : 'Could not start phone change')
+    } finally {
+      setSavingPhone(false)
+    }
+  }
+
+  async function verifyPhoneChange(event: React.FormEvent) {
+    event.preventDefault()
+    if (!phoneChallenge) return
+    if (!/^\d{6}$/.test(phoneCode)) {
+      setPhoneError('Enter the 6-digit code sent by SMS.')
+      return
+    }
+
+    setPhoneError(null)
+    setSavingPhone(true)
+    try {
+      const result = await api.changePhone(token, {
+        challenge_id: phoneChallenge,
+        code: phoneCode,
+      })
+      if ('challenge_id' in result) {
+        setPhoneChallenge(result.challenge_id)
+        setVerifyingNewPhone(true)
+        setPhoneCode('')
+        showSuccess('Current number verified. Enter the code sent to your new number.')
+        return
+      }
+      const refreshed = await refreshMe()
+      if (!refreshed.success) throw new Error('Could not refresh your profile.')
+      setPhoneChallenge(null)
+      setPhoneChanged(true)
+      showSuccess('Phone number changed successfully.')
+    } catch (cause) {
+      setPhoneError(cause instanceof Error ? cause.message : 'Could not verify phone number')
+    } finally {
+      setSavingPhone(false)
+    }
+  }
+
+  function cancelPhoneChange() {
+    setPhoneChallenge(null)
+    setPhoneCode('')
+    setPhoneError(null)
   }
 
   async function deleteAccount() {
@@ -149,7 +224,27 @@ export default function ProfilePage() {
     }
   }
 
-  if (loading && !me) {
+  function openDeleteDialog() {
+    setDeleteDialogOpen(true)
+    setDeleteConfirmEmail('')
+    setError(null)
+  }
+
+  function closeDeleteDialog() {
+    setDeleteDialogOpen(false)
+    setDeleteConfirmEmail('')
+  }
+
+  async function confirmDelete() {
+    if (deleteConfirmEmail.trim() !== displayEmail) {
+      setError('Email does not match')
+      return
+    }
+    setDeleteDialogOpen(false)
+    await deleteAccount()
+  }
+
+  if (!me && (meLoading || cachedMe)) {
     return (
       <div className="flex justify-center py-16">
         <LoadingSpinner />
@@ -157,6 +252,12 @@ export default function ProfilePage() {
     )
   }
 
+  const loadError = meError
+    ? meError instanceof Error
+      ? meError.message
+      : 'Could not load profile'
+    : null
+  const shownError = error ?? loadError
   const displayName = me?.merchant_name ?? me?.name ?? 'Merchant'
   const displayEmail = me?.email ?? ''
 
@@ -179,9 +280,9 @@ export default function ProfilePage() {
         </Alert>
       )}
 
-      {error && (
+      {shownError && (
         <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription>{shownError}</AlertDescription>
         </Alert>
       )}
 
@@ -254,10 +355,18 @@ export default function ProfilePage() {
                 value={newEmail}
                 onChange={(e) => {
                   setNewEmail(e.target.value)
+                  setEmailFormatError(null)
                   setEmailSent(false)
                 }}
                 placeholder="you@example.com"
+                aria-describedby={emailFormatError ? 'email-format-error' : undefined}
+                aria-invalid={emailFormatError ? true : undefined}
               />
+              {emailFormatError && (
+                <p id="email-format-error" className="text-sm text-destructive" role="alert">
+                  {emailFormatError}
+                </p>
+              )}
               <p className="text-dim text-xs">
                 Changing your email requires verification. We will send a confirmation link to the
                 new address.
@@ -277,6 +386,93 @@ export default function ProfilePage() {
         )}
       </section>
 
+      {/* Phone number change */}
+      <section className="bg-panel border-hairline rounded-2xl border p-5 space-y-4">
+        <div className="flex items-center gap-2">
+          <Phone className="size-4 text-dim" aria-hidden />
+          <h3 className="font-bold text-white">Phone number</h3>
+        </div>
+
+        <p className="text-dim text-sm">
+          Current number: <strong className="text-foreground">{displayPhone}</strong>
+        </p>
+
+        {phoneChanged ? (
+          <Alert className="border-emerald-500/30 bg-emerald-500/10">
+            <AlertDescription className="text-emerald-200">
+              Your phone number has been changed. Your new number will be used for OTP next time.
+            </AlertDescription>
+          </Alert>
+        ) : !phoneChallenge ? (
+          <form onSubmit={startPhoneChange} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="new-phone">New phone number</Label>
+              <Input
+                id="new-phone"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                value={newPhone}
+                onChange={(event) => {
+                  setNewPhone(event.target.value)
+                  setPhoneError(null)
+                }}
+                placeholder="+254712345678"
+              />
+              <p className="text-dim text-xs">
+                We will send a code to your current number and then to the new one. Both must be
+                verified before the change takes effect.
+              </p>
+              {phoneError && (
+                <p className="text-sm text-destructive" role="alert">
+                  {phoneError}
+                </p>
+              )}
+            </div>
+            <div className="flex justify-end">
+              <Button type="submit" variant="outline" disabled={savingPhone || !newPhone.trim()}>
+                {savingPhone ? 'Sending…' : 'Change phone'}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={verifyPhoneChange} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="phone-code">
+                {verifyingNewPhone
+                  ? 'Code sent to your new number'
+                  : 'Code sent to your current number'}
+              </Label>
+              <Input
+                id="phone-code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={phoneCode}
+                onChange={(event) => {
+                  setPhoneCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                  setPhoneError(null)
+                }}
+                placeholder="6-digit code"
+              />
+            </div>
+            {phoneError && (
+              <p className="text-sm text-destructive" role="alert">
+                {phoneError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={cancelPhoneChange}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={savingPhone || phoneCode.length !== 6}>
+                {savingPhone ? 'Verifying…' : 'Verify code'}
+              </Button>
+            </div>
+          </form>
+        )}
+      </section>
+
       {/* Push notifications */}
       <section className="bg-panel border-hairline rounded-2xl border p-5 space-y-4">
         <div className="flex items-center gap-2">
@@ -285,6 +481,8 @@ export default function ProfilePage() {
         </div>
         <PushNotificationToggle />
       </section>
+
+      <ActiveSessions />
 
       <Separator />
 
@@ -300,29 +498,50 @@ export default function ProfilePage() {
           wallet, and API keys. This action cannot be undone.
         </p>
 
-        <AlertDialog>
+        <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
           <AlertDialogTrigger asChild>
-            <Button variant="destructive" className="w-full sm:w-auto">
+            <Button variant="destructive" className="w-full sm:w-auto" onClick={openDeleteDialog}>
               <Trash2 className="size-4" aria-hidden /> Delete account
             </Button>
           </AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>Delete your account?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will permanently delete your merchant account, wallet, payment history, and all
-                API keys. Any pending payments or withdrawals will be lost. This action{' '}
-                <strong>cannot be undone</strong>.
+              {/* AlertDialogDescription renders a <p>; asChild avoids nesting <p>/<div> in it. */}
+              <AlertDialogDescription asChild>
+                <div className="space-y-3">
+                  <p>
+                    This will permanently delete your merchant account, wallet, payment history, and
+                    all API keys. Any pending payments or withdrawals will be lost.
+                  </p>
+                  <p className="font-semibold text-destructive">This action cannot be undone.</p>
+                  <div className="space-y-2 pt-2">
+                    <Label htmlFor="delete-confirm-email" className="text-foreground">
+                      Type your email address to confirm: <strong>{displayEmail}</strong>
+                    </Label>
+                    <Input
+                      id="delete-confirm-email"
+                      type="email"
+                      placeholder={displayEmail}
+                      value={deleteConfirmEmail}
+                      onChange={(e) => setDeleteConfirmEmail(e.target.value)}
+                      disabled={deleting}
+                      autoComplete="off"
+                    />
+                  </div>
+                </div>
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={deleting} onClick={closeDeleteDialog}>
+                Cancel
+              </AlertDialogCancel>
               <AlertDialogAction
                 onClick={(e) => {
                   e.preventDefault()
-                  void deleteAccount()
+                  void confirmDelete()
                 }}
-                disabled={deleting}
+                disabled={deleting || deleteConfirmEmail.trim() !== displayEmail}
                 className="bg-destructive text-white hover:bg-destructive/90"
               >
                 {deleting ? 'Deleting…' : 'Yes, delete my account'}
